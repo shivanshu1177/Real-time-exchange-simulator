@@ -1,91 +1,57 @@
 # RTES Architecture
 
-## Threading Model
+This describes the code as it is today. Known defects are listed in [KNOWN_ISSUES.md](KNOWN_ISSUES.md) and
+planned changes in [ROADMAP.md](ROADMAP.md).
 
-### Core Threads
-1. **TCP Gateway Thread**: Handles incoming order connections, frame parsing
-2. **Risk Thread**: Single-actor validation of all orders  
-3. **Matching Threads**: One per symbol, single-writer matching engine
-4. **Market Data Thread**: UDP multicast publisher
-5. **Metrics Thread**: Prometheus endpoint and monitoring
+## Threads
+1. **Gateway acceptor** (`TcpGateway::acceptor_loop`): accepts TCP connections on port 8888.
+2. **Gateway worker** (`TcpGateway::worker_loop`): polls client sockets, decodes messages, runs a quick symbol and
+   quantity check, takes an `Order` from the pool and pushes it to the risk queue.
+3. **Risk** (`RiskManager::run`): one thread; full pre-trade checks (size, price collar, per-client rate,
+   duplicate id, notional), then routes to the symbol's engine.
+4. **Matching engine** (`MatchingEngine::run`): one thread per symbol; the only writer of that symbol's book.
+5. **Market data** (`UdpPublisher::worker_loop`): drains market-data events and sends UDP multicast.
 
-### Queue Architecture
-- **SPSC Queues**: Fixed thread pairs (Gateway→Risk, Risk→Matching)
-- **MPMC Queue**: Shared fan-in for market data publishing
-- **Memory Layout**: Cache-line padding, acquire/release semantics
-
-## Data Flow
-
+## Data flow
 ```
-TCP Client → Gateway → Risk → Matching → Market Data → UDP Multicast
-                ↓         ↓        ↓
-              Metrics   Metrics  Metrics
+TCP client → gateway worker ─SPSC→ risk ─SPSC (per symbol)→ matching engine ─MPMC→ UDP publisher → multicast
+                 │
+                 └── ORDER_ACK back to the client (sent when the order is queued, before risk; see KNOWN_ISSUES W1)
 ```
+No execution reports flow back to clients yet (KNOWN_ISSUES W5).
 
-## Order Lifecycle
+## Queues
+- `SPSCQueue<T>` (`include/rtes/spsc_queue.hpp`): bounded ring, head and tail on separate cache lines.
+- `MPMCQueue<T>` (`include/rtes/mpmc_queue.hpp`): bounded ring with per-cell sequence numbers; all engines push
+  market-data events into one instance.
 
-1. **Ingress**: TCP frame → parse → validate format
-2. **Risk**: Size/price/credit checks → approve/reject  
-3. **Matching**: Price-time priority → fill/partial/rest
-4. **Egress**: Trade/ack → UDP multicast + TCP response
+## Memory
+- `OrderPool` (`include/rtes/memory_pool.hpp`): fixed-size pool of `Order` objects (`order_pool_size` in config,
+  1M by default) with a CAS-based free list. Safe only with a single acquiring thread (KNOWN_ISSUES P1).
+- Orders are returned to the pool on fill and cancel, and by risk on reject. Market orders that find no
+  liquidity are not returned (KNOWN_ISSUES B3).
+- `Order` and `Trade` still contain a `std::string` symbol, so the hot path allocates (KNOWN_ISSUES B6).
 
-## Memory Management
-
-### Order Pool
-- Fixed-size pool (1M orders default)
-- O(1) allocation via free-list
-- RAII lifetime management
-- Pool returns on fill/cancel
-
-### Order Book Structure
+## Order book (`include/rtes/order_book.hpp`)
 ```cpp
-struct OrderBook {
-    std::map<Price, std::deque<OrderID>> bids;  // descending
-    std::map<Price, std::deque<OrderID>> asks;  // ascending  
-    std::unordered_map<OrderID, OrderPtr> lookup; // O(1) cancel
-};
+std::map<Price, PriceLevel, std::greater<Price>> bids_;   // best bid first
+std::map<Price, PriceLevel>                      asks_;   // best ask first
+std::unordered_map<OrderID, Order*>              order_lookup_;
+// PriceLevel: price, std::deque<Order*> FIFO, total_quantity
 ```
+Matching walks the best level first (price-time priority). Trades are reported through a `std::function`
+callback to the engine, which publishes them. The book also holds a mutex, which the single-writer design
+does not need.
 
-## Network Protocols
+## Network protocols
+Exact message layouts are in [API.md](API.md).
+- **TCP order entry** (port 8888): `NEW_ORDER`, `CANCEL_ORDER` in; `ORDER_ACK` out.
+- **UDP market data** (239.0.0.1:9999): BBO updates and trades, with a per-publisher sequence number.
+  No depth messages yet.
 
-### TCP Order Entry (Port 8888)
-```cpp
-struct MessageHeader {
-    uint32_t type;
-    uint32_t length;
-    uint64_t sequence;
-    uint64_t timestamp;
-    uint32_t checksum;
-} __attribute__((packed));
-```
-
-### UDP Market Data (239.0.0.1:9999)
-- BBO updates
-- Trade notifications  
-- Top-N depth snapshots
-- Monotonic sequence numbers
-
-## Concurrency Design
-
-### Lock-Free Components
-- SPSC/MPMC queues (sequence tickets)
-- Memory pool free-list
-- Atomic counters for metrics
-
-### Synchronization Points
-- Risk state (confined to risk thread)
-- Order book (single writer per symbol)
-- Market data aggregation (MPMC queue)
-
-## Performance Optimizations
-
-### Hot Path
-- Zero allocations in matching
-- Branch prediction hints
-- Cache prefetching
-- Explicit inlining
-
-### Memory Layout
-- Cache-line alignment
-- False sharing avoidance
-- Contiguous data structures
+## Configuration
+`configs/config.json`, parsed by `src/config.cpp`. Loaded but not yet used:
+- `tick_size`, `lot_size`
+- `metrics_port`
+- `enable_cpu_pinning`
+- `persistence.*`

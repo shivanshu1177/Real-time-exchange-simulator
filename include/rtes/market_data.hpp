@@ -28,4 +28,7 @@ struct TradeUpdateMessage {
 
 #pragma pack(pop)
 
+static_assert(sizeof(BboUpdateMessage)   == 60, "BboUpdateMessage wire size");
+static_assert(sizeof(TradeUpdateMessage) == 76, "TradeUpdateMessage wire size");
+
 } // namespace rtes

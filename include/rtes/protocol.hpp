@@ -65,6 +65,13 @@ struct TradeReportMessage {
 
 #pragma pack(pop)
 
+// Wire sizes are part of the protocol (see docs/API.md); a change here is a protocol change.
+static_assert(sizeof(MessageHeader)      == 28, "MessageHeader wire size");
+static_assert(sizeof(NewOrderMessage)    == 68, "NewOrderMessage wire size");
+static_assert(sizeof(CancelOrderMessage) == 44, "CancelOrderMessage wire size");
+static_assert(sizeof(OrderAckMessage)    == 72, "OrderAckMessage wire size");
+static_assert(sizeof(TradeReportMessage) == 76, "TradeReportMessage wire size");
+
 // Simple XOR-fold checksum over message body (bytes after the checksum field)
 inline uint32_t compute_checksum(const void* data, size_t len) noexcept {
     const uint8_t* bytes = static_cast<const uint8_t*>(data);

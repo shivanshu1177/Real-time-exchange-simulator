@@ -2,39 +2,44 @@
 
 [![CI](https://github.com/shivanshu1177/Real-time-exchange-simulator/actions/workflows/ci.yml/badge.svg)](https://github.com/shivanshu1177/Real-time-exchange-simulator/actions/workflows/ci.yml)
 
-A high-performance, low-latency trading exchange simulator built with modern C++20/23.
+A C++20 exchange simulator: a TCP binary order gateway, pre-trade risk, one matching-engine thread per symbol
+(price-time priority) and UDP multicast market data.
 
-## Performance Targets
-- **Throughput**: ≥100,000 orders/sec (single host)
-- **Latency**: avg ≤10μs, p99 ≤100μs, p999 ≤500μs
-- **Deterministic**: Zero data races, allocation-free hot path
+## Status
+This is a work in progress. What exists today:
+- **Builds and tests:** GCC 14 and Clang 18 with warnings as errors, plus ASan/UBSan and TSan builds, all run in CI.
+  Test coverage is currently 3 order-book unit tests.
+- **Order entry:** TCP on port 8888, fixed-size binary messages ([API](docs/API.md)).
+- **Matching:** limit and market orders, price-time priority, one writer thread per symbol.
+- **Market data:** UDP multicast on 239.0.0.1:9999, BBO (prices only) and trades.
+
+Not working yet, and tracked in [KNOWN_ISSUES](docs/KNOWN_ISSUES.md):
+- Orders are acknowledged before the risk check.
+- Cancel does nothing.
+- Clients receive no fill reports.
+- Partial TCP reads are mishandled.
+- There is no logon.
+
+Planned work is in the [ROADMAP](docs/ROADMAP.md): depth, metrics, determinism, perps, a market-making venue,
+and measured benchmarks. No performance figures are claimed until benchmark results are committed to the repo.
 
 ## Architecture
-- **TCP Order Gateway** (port 8888): Binary protocol with robust framing
-- **Risk Manager**: Pre-trade validation (size, price, credit limits)
-- **Matching Engine**: Per-symbol single-writer, price-time priority
-- **Market Data**: UDP multicast (239.0.0.1:9999) BBO/trades/depth
-- **Metrics**: Prometheus endpoint (port 8080)
+- **TCP Order Gateway** (port 8888): binary protocol
+- **Risk Manager**: pre-trade checks (size, price collar, rate, notional) on its own thread
+- **Matching Engine**: one single-writer thread per symbol, price-time priority
+- **Market Data**: UDP multicast (239.0.0.1:9999), BBO and trades
 
 ## Quick Start
 
 ```bash
-# Build
-mkdir -p build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
+cmake --preset release && cmake --build --preset release -j
+ctest --preset release
 
-# Run tests
-ctest --output-on-failure
+# Start the exchange (from the repo root)
+./build/release/trading_exchange configs/config.json
 
-# Start exchange
-./trading_exchange ../configs/config.json
-
-# Run client simulator
-./client_simulator --strategy market_maker --symbol AAPL
-
-# Monitor metrics
-curl -s localhost:8080/metrics | head
+# In another terminal: a simple market-making client
+./build/release/client_simulator --strategy market_maker --symbol AAPL --duration 10
 ```
 
 ## Repository Structure
