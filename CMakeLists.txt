@@ -59,8 +59,8 @@ target_link_libraries(trading_exchange PRIVATE rtes_core rtes_project_options)
 add_executable(bench_memory_pool tools/bench_memory_pool.cpp)
 target_link_libraries(bench_memory_pool PRIVATE rtes_core rtes_project_options)
 
-add_executable(bench_matching tools/bench_matching.cpp)
-target_link_libraries(bench_matching PRIVATE rtes_core rtes_project_options)
+add_executable(bench_book tools/bench_book.cpp)
+target_link_libraries(bench_book PRIVATE rtes_core rtes_project_options)
 
 add_executable(bench_exchange tools/bench_exchange.cpp)
 target_link_libraries(bench_exchange PRIVATE rtes_core rtes_project_options)
@@ -102,4 +102,7 @@ if(GTest_FOUND OR TARGET gtest)
     endif()
     include(GoogleTest)
     gtest_discover_tests(rtes_tests)
+
+    # Keep the benchmark working: a tiny run, no numbers checked.
+    add_test(NAME bench_book_smoke COMMAND bench_book --ops 2000 --depth 200)
 endif()

@@ -67,7 +67,7 @@ More detail in [ARCHITECTURE](docs/ARCHITECTURE.md).
 
 ## How I know it works
 
-- **80 automated tests** (82 in debug builds), run in CI on GCC 14 and Clang 18 (debug and release) and on
+- **85 automated tests** (87 in debug builds), run in CI on GCC 14 and Clang 18 (debug and release) and on
   macOS with Apple Clang.
 - **A differential test for the order book.** The real book and a deliberately naive reference book
   ([`tests/reference_book.hpp`](tests/reference_book.hpp)) get the same random orders, cancels and modifies:
@@ -93,9 +93,13 @@ More detail in [ARCHITECTURE](docs/ARCHITECTURE.md).
   was simpler and safer than writing a cleverer lock-free stack. See [design/memory.md](docs/design/memory.md).
 - **Orders at a price level are an intrusive linked list,** so a cancel from the middle of the queue is O(1), and
   nothing is allocated per order.
-- **No performance numbers yet.** Measuring latency properly means percentiles, an open-loop load generator
-  (to avoid coordinated omission) and known hardware. Until that work is done and the results are committed, I
-  don't publish a number. See [PERFORMANCE](docs/PERFORMANCE.md).
+- **Numbers only with their context.**
+  - What I publish today: order-book latency percentiles from `bench_book`
+    ([`bench/results/`](bench/results/)), measured on my own machine.
+  - Each results file records the CPU, OS, compiler, flags and commit, and states that it is in-process and
+    single-threaded.
+  - Wire-to-wire latency needs an open-loop load generator to avoid coordinated omission. I'll measure it
+    that way before quoting it. See [PERFORMANCE](docs/PERFORMANCE.md).
 
 ## Try it
 
@@ -134,11 +138,17 @@ The [RUNBOOK](docs/RUNBOOK.md) shows the market-data receiver and the strategy c
 
 Other build presets: `debug`, `asan` (address and undefined-behaviour sanitizers), `tsan` (thread sanitizer).
 
+To measure the order book on your machine (results go to `bench/results/` with the hardware recorded):
+
+```bash
+./scripts/bench.sh
+```
+
 ## What's not done yet
 
 - **No authentication.** Logon binds an identity but does not check the API key.
 - **No order book depth on the market-data feed,** and **no metrics endpoint** yet.
-- **No published latency or throughput figures** (see above).
+- **No wire-to-wire latency or throughput figures yet,** only in-process order book percentiles (see above).
 
 The order I'm tackling these in is in the [ROADMAP](docs/ROADMAP.md): an end-to-end test in CI, depth, a
 deterministic journal with replay, fuzzing, crypto-perpetual order types, a market-making research venue, and
@@ -150,7 +160,9 @@ then honest benchmarks.
 include/rtes/   headers: protocol, gateway, matching engine, order book, risk, memory pool, queues
 src/            implementation
 tests/          unit, lifecycle, TCP and differential tests
-tools/          tcp_client, client_simulator, udp_receiver, benchmarks
+tools/          tcp_client, client_simulator, udp_receiver, bench_book
+scripts/        bench.sh: run the benchmark and record the machine it ran on
+bench/results/  benchmark results, one file per run
 configs/        exchange configuration (symbols, risk limits)
 docs/           protocol, architecture, runbook, roadmap, known issues
 ```

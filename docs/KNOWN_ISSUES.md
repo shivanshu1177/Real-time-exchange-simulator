@@ -15,4 +15,4 @@ Line numbers refer to the current tree. The milestone column refers to [ROADMAP.
 |---|---|---|
 | F1 | No HTTP metrics or health endpoint: nothing listens on `metrics_port` (8080). | M2 |
 | F2 | No L2 depth market data; only BBO and trades. | M2 |
-| F3 | No published benchmark results. Latency/throughput figures in earlier docs were not produced by any tool in this repo and were removed. | M4 |
+| F3 | No wire-to-wire benchmark yet: only in-process order book percentiles (`bench/results/`). Latency/throughput figures in earlier docs were not produced by any tool in this repo and were removed. | M4 |
