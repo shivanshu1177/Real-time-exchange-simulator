@@ -1,4 +1,5 @@
 #include "rtes/strategies.hpp"
+#include "rtes/net_compat.hpp"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -33,6 +34,7 @@ static int tcp_connect(const std::string& host, uint16_t port) {
         return -1;
     }
     ::freeaddrinfo(res);
+    net::disable_sigpipe(fd);
     return fd;
 }
 
@@ -40,7 +42,7 @@ static bool send_all(int fd, const void* buf, size_t len) {
     const uint8_t* p = static_cast<const uint8_t*>(buf);
     size_t sent = 0;
     while (sent < len) {
-        ssize_t n = ::send(fd, p + sent, len - sent, 0);
+        ssize_t n = ::send(fd, p + sent, len - sent, net::kSendNoSignal);
         if (n <= 0) return false;
         sent += static_cast<size_t>(n);
     }

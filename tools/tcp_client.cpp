@@ -1,4 +1,5 @@
 #include "rtes/protocol.hpp"
+#include "rtes/net_compat.hpp"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -38,7 +39,7 @@ static bool send_all(int fd, const void* buf, size_t len) {
     const uint8_t* p = static_cast<const uint8_t*>(buf);
     size_t sent = 0;
     while (sent < len) {
-        ssize_t n = ::send(fd, p + sent, len - sent, 0);
+        ssize_t n = ::send(fd, p + sent, len - sent, rtes::net::kSendNoSignal);
         if (n <= 0) return false;
         sent += static_cast<size_t>(n);
     }
@@ -109,6 +110,7 @@ int main(int argc, char* argv[]) {
         perror("connect"); ::close(fd); ::freeaddrinfo(res); return 1;
     }
     ::freeaddrinfo(res);
+    rtes::net::disable_sigpipe(fd);
     std::cout << "Connected to " << host << ":" << port << "\n";
 
     // Log on: identity is bound to the session here, not taken from orders.

@@ -90,6 +90,32 @@ jobs:
           path: build/${{ matrix.preset }}/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
 
+  macos:
+    name: macos-14 (Apple Clang) / release
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ninja
+        run: brew install ninja
+
+      - name: Configure
+        run: cmake --preset release -DRTES_WERROR=ON
+
+      - name: Build
+        run: cmake --build --preset release -j
+
+      - name: Test
+        run: ctest --preset release --output-on-failure
+
+      - name: Upload test log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-macos-release
+          path: build/release/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
+
   # Wire-level end-to-end test: enabled once the e2e harness exists.
   # e2e:
   #   name: e2e (release)

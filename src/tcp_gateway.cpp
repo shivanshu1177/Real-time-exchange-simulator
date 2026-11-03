@@ -1,5 +1,6 @@
 #include "rtes/tcp_gateway.hpp"
 #include "rtes/logger.hpp"
+#include "rtes/net_compat.hpp"
 #include <algorithm>
 #include <arpa/inet.h>
 #include <cerrno>
@@ -70,8 +71,8 @@ bool ClientConnection::queue_send(const void* data, size_t len) {
 
 bool ClientConnection::flush() {
     while (tx_begin_ < tx_end_) {
-        // MSG_NOSIGNAL: a peer that already closed must not raise SIGPIPE.
-        ssize_t n = ::send(fd_.get(), tx_.get() + tx_begin_, tx_end_ - tx_begin_, MSG_NOSIGNAL);
+        // A peer that already closed must not raise SIGPIPE (see net_compat.hpp).
+        ssize_t n = ::send(fd_.get(), tx_.get() + tx_begin_, tx_end_ - tx_begin_, net::kSendNoSignal);
         if (n > 0) {
             tx_begin_ += static_cast<size_t>(n);
         } else if (n < 0 && errno == EINTR) {
@@ -188,6 +189,7 @@ void TcpGateway::accept_pending() {
         ::fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
         int opt = 1;
         ::setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+        net::disable_sigpipe(client_fd);
 
         const SessionId session = core_.open_session();
         auto conn = std::make_unique<ClientConnection>(client_fd, session);

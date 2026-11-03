@@ -6,6 +6,7 @@ health endpoint yet (see [ROADMAP.md](ROADMAP.md)).
 ## Build
 ```bash
 sudo apt-get install -y g++-14 cmake ninja-build      # Ubuntu 24.04; clang-18 also works
+# macOS: xcode-select --install && brew install cmake ninja
 cmake --preset release && cmake --build --preset release -j
 ctest --preset release
 ```
@@ -36,7 +37,8 @@ The process logs to stdout (INFO/WARN) and stderr (ERROR) and stops cleanly on C
 ./build/release/client_simulator --strategy market_maker --symbol AAPL --duration 10
 ```
 Multicast needs a route for 239.0.0.0/8 on the receiving host (`ip route show | grep 239`). On a single
-machine without one, add it on loopback: `sudo ip route add 239.0.0.0/8 dev lo`.
+Linux machine without one, add it on loopback: `sudo ip route add 239.0.0.0/8 dev lo`.
+On macOS: `sudo route -n add -net 239.0.0.0/8 127.0.0.1`.
 
 ## Debugging
 ```bash

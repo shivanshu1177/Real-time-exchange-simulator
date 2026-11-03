@@ -3,6 +3,7 @@
 // (127.0.0.1, OS-assigned port) with matching engines on their own threads.
 #include <gtest/gtest.h>
 #include "rtes/tcp_gateway.hpp"
+#include "rtes/net_compat.hpp"
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -52,7 +53,7 @@ std::vector<uint8_t> cancel_bytes(uint64_t coid) {
 
 void write_all(int fd, const uint8_t* p, size_t n) {
     while (n > 0) {
-        ssize_t w = ::send(fd, p, n, MSG_NOSIGNAL);
+        ssize_t w = ::send(fd, p, n, net::kSendNoSignal);
         ASSERT_GT(w, 0);
         p += w; n -= static_cast<size_t>(w);
     }
@@ -69,6 +70,8 @@ struct Pair {
         EXPECT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
         ::fcntl(sv[1], F_SETFL, ::fcntl(sv[1], F_GETFL, 0) | O_NONBLOCK);
         client = sv[0];
+        net::disable_sigpipe(sv[0]);
+        net::disable_sigpipe(sv[1]);
         conn = std::make_unique<ClientConnection>(sv[1], 1);
     }
     ~Pair() { ::close(client); }
@@ -168,6 +171,7 @@ protected:
         EXPECT_EQ(::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)), 0);
         int one = 1;
         ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+        net::disable_sigpipe(fd);
         return fd;
     }
 

@@ -67,7 +67,8 @@ More detail in [ARCHITECTURE](docs/ARCHITECTURE.md).
 
 ## How I know it works
 
-- **80 automated tests** (82 in debug builds), run in CI on GCC 14 and Clang 18, in debug and release.
+- **80 automated tests** (82 in debug builds), run in CI on GCC 14 and Clang 18 (debug and release) and on
+  macOS with Apple Clang.
 - **A differential test for the order book.** The real book and a deliberately naive reference book
   ([`tests/reference_book.hpp`](tests/reference_book.hpp)) get the same random orders, cancels and modifies:
   100 seeds × 100,000 operations. After every operation, every fill, cancel and price level must match. They do,
@@ -98,7 +99,11 @@ More detail in [ARCHITECTURE](docs/ARCHITECTURE.md).
 
 ## Try it
 
-You need Linux (or WSL2), GCC 14 or Clang 18, CMake 3.20+ and Ninja.
+You need CMake 3.20+, Ninja and a C++20 compiler:
+- **Linux or WSL2:** GCC 14 or Clang 18.
+- **macOS:** the Xcode command-line tools plus `brew install cmake ninja`.
+
+CI builds and tests all three: GCC 14 and Clang 18 on Ubuntu, and Apple Clang on macOS.
 
 ```bash
 cmake --preset release && cmake --build --preset release -j && ctest --preset release
@@ -134,7 +139,6 @@ Other build presets: `debug`, `asan` (address and undefined-behaviour sanitizers
 - **No authentication.** Logon binds an identity but does not check the API key.
 - **No order book depth on the market-data feed,** and **no metrics endpoint** yet.
 - **No published latency or throughput figures** (see above).
-- **macOS is not supported yet:** the gateway uses `MSG_NOSIGNAL`, which macOS does not have.
 
 The order I'm tackling these in is in the [ROADMAP](docs/ROADMAP.md): an end-to-end test in CI, depth, a
 deterministic journal with replay, fuzzing, crypto-perpetual order types, a market-making research venue, and
