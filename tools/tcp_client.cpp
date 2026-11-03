@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <unistd.h>
+#include <algorithm>
 #include <iostream>
 #include <string>
 #include <sstream>
@@ -107,7 +108,8 @@ int main(int argc, char* argv[]) {
     rtes::NewOrderMessage msg{};
     msg.client_order_id = now_ns(); // unique per invocation
     msg.client_id       = 999;
-    std::strncpy(msg.symbol, symbol.c_str(), 8);
+    // msg is zero-initialised, so this null-pads the 8-byte wire field
+    std::memcpy(msg.symbol, symbol.data(), std::min(symbol.size(), sizeof(msg.symbol)));
     msg.side       = side;
     msg.order_type = otype;
     msg.price      = price;

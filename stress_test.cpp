@@ -52,8 +52,8 @@ private:
                 while (running.load()) {
                     // Ultra-fast order simulation
                     volatile uint64_t order_id = operations.fetch_add(1);
-                    volatile double price = 100.0 + (order_id % 1000) * 0.01;
-                    volatile int quantity = 100;
+                    [[maybe_unused]] volatile double price = 100.0 + (order_id % 1000) * 0.01;
+                    [[maybe_unused]] volatile int quantity = 100;
                 }
             });
         }
@@ -111,7 +111,7 @@ private:
                 
                 // Perform operations under memory pressure
                 for (int j = 0; j < 1000; ++j) {
-                    volatile int temp = operations.fetch_add(1) * 2;
+                    [[maybe_unused]] volatile int temp = operations.fetch_add(1) * 2;
                 }
                 
                 if (i % 100 == 0) {
@@ -126,7 +126,7 @@ private:
             uint64_t ops_before = operations.load();
             
             for (int i = 0; i < 1000000; ++i) {
-                volatile int temp = operations.fetch_add(1) * 2;
+                [[maybe_unused]] volatile int temp = operations.fetch_add(1) * 2;
                 
                 // Random memory access to stress the system
                 size_t idx = i % num_chunks;
@@ -186,7 +186,7 @@ private:
                     try {
                         // Simulate variable processing time
                         for (int k = 0; k < delay_dist(gen); ++k) {
-                            volatile int temp = k * k;
+                            [[maybe_unused]] volatile int temp = k * k;
                         }
                         
                         // Simulate occasional failures (1% rate)
@@ -196,8 +196,8 @@ private:
                         }
                         
                         // Simulate successful operation
-                        volatile int order_id = i * ops_per_thread + j;
-                        volatile double price = 100.0 + (j % 1000) * 0.01;
+                        [[maybe_unused]] volatile int order_id = i * ops_per_thread + j;
+                        [[maybe_unused]] volatile double price = 100.0 + (j % 1000) * 0.01;
                         
                         successful_ops.fetch_add(1);
                         
@@ -219,7 +219,7 @@ private:
                     
                     // CPU spike
                     for (int j = 0; j < 100000; ++j) {
-                        volatile double result = std::sin(j) * std::cos(j);
+                        [[maybe_unused]] volatile double result = std::sin(j) * std::cos(j);
                     }
                     
                     // Clean up some memory randomly
@@ -283,8 +283,8 @@ private:
             threads.emplace_back([&operations, &running]() {
                 while (running.load()) {
                     volatile uint64_t order_id = operations.fetch_add(1);
-                    volatile double price = 100.0 + (order_id % 1000) * 0.01;
-                    volatile int quantity = 100 + (order_id % 900);
+                    [[maybe_unused]] volatile double price = 100.0 + (order_id % 1000) * 0.01;
+                    [[maybe_unused]] volatile int quantity = 100 + (order_id % 900);
                 }
             });
         }

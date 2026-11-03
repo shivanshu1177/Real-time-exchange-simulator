@@ -7,6 +7,9 @@
 #include <thread>
 #include <atomic>
 #include <unordered_map>
+#include <cstring>
+#include <memory>
+#include <string>
 
 namespace rtes {
 
@@ -26,17 +29,19 @@ struct TradeData {
     Quantity quantity{0};
 };
 
+struct BboData {
+    Price    bid_price{0};
+    Quantity bid_quantity{0};
+    Price    ask_price{0};
+    Quantity ask_quantity{0};
+};
+
 struct MarketDataEvent {
     enum Type { TRADE, BBO_UPDATE } type{TRADE};
     char symbol[8]{};
     union {
         TradeData trade;
-        struct {
-            Price    bid_price{0};
-            Quantity bid_quantity{0};
-            Price    ask_price{0};
-            Quantity ask_quantity{0};
-        } bbo;
+        BboData   bbo;
     };
 
     MarketDataEvent() : type(BBO_UPDATE), bbo{} {}
@@ -73,7 +78,7 @@ public:
 
 private:
     std::string symbol_;
-    OrderPool& pool_;
+    [[maybe_unused]] OrderPool& pool_;  // passed to the OrderBook, which owns release; unused here
     std::unique_ptr<OrderBook> book_;
     
     // Threading

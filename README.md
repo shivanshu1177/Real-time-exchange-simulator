@@ -48,9 +48,15 @@ curl -s localhost:8080/metrics | head
 ```
 
 ## Requirements
-- C++20/23 compiler (GCC 11+, Clang 13+)
-- CMake 3.20+
+- C++20 compiler. Verified: GCC 14 and Clang 18 on Ubuntu 24.04
+- CMake 3.20+ and Ninja
 - Linux (recommended for performance)
+
+Build presets: `debug`, `release` (portable `-O3`), `asan` (address + undefined behaviour sanitizers), `tsan`.
+```bash
+cmake --preset release && cmake --build --preset release -j && ctest --preset release
+```
+Options: `-DRTES_NATIVE=ON` adds `-march=native` (binaries then only run on the build CPU); `-DRTES_WERROR=ON` turns warnings into errors.
 
 ## License
 MIT License - see LICENSE file

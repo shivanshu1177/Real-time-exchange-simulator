@@ -88,7 +88,7 @@ int main(int argc, char* argv[]) {
             static_cast<size_t>(n) >= sizeof(rtes::TradeUpdateMessage)) {
             const auto* tr = reinterpret_cast<const rtes::TradeUpdateMessage*>(buf);
             char sym[9] = {};
-            std::strncpy(sym, tr->symbol, 8);
+            std::memcpy(sym, tr->symbol, 8);  // sym[8] stays NUL
             double price = static_cast<double>(tr->price) / 10000.0;
             std::cout << "[TRADE] seq=" << hdr->sequence
                       << " symbol=" << sym
@@ -101,7 +101,7 @@ int main(int argc, char* argv[]) {
                    static_cast<size_t>(n) >= sizeof(rtes::BboUpdateMessage)) {
             const auto* bbo = reinterpret_cast<const rtes::BboUpdateMessage*>(buf);
             char sym[9] = {};
-            std::strncpy(sym, bbo->symbol, 8);
+            std::memcpy(sym, bbo->symbol, 8);  // sym[8] stays NUL
             double bid = static_cast<double>(bbo->bid_price) / 10000.0;
             double ask = static_cast<double>(bbo->ask_price) / 10000.0;
             std::cout << "[BBO]   seq=" << hdr->sequence

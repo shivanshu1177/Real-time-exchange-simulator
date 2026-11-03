@@ -82,7 +82,7 @@ void UdpPublisher::process_market_data_event(const MarketDataEvent& ev) {
 
 void UdpPublisher::send_bbo_update(const MarketDataEvent& ev) {
     BboUpdateMessage msg{};
-    std::strncpy(msg.symbol, ev.symbol, sizeof(msg.symbol) - 1);
+    std::memcpy(msg.symbol, ev.symbol, sizeof(msg.symbol) - 1);  // last byte stays NUL
     msg.bid_price    = ev.bbo.bid_price;
     msg.bid_quantity = ev.bbo.bid_quantity;
     msg.ask_price    = ev.bbo.ask_price;
@@ -99,7 +99,7 @@ void UdpPublisher::send_trade_update(const MarketDataEvent& ev) {
     msg.trade_id      = ev.trade.trade_id;      // TradeData fields (POD)
     msg.buy_order_id  = ev.trade.buy_order_id;
     msg.sell_order_id = ev.trade.sell_order_id;
-    std::strncpy(msg.symbol, ev.symbol, sizeof(msg.symbol) - 1);
+    std::memcpy(msg.symbol, ev.symbol, sizeof(msg.symbol) - 1);  // last byte stays NUL
     msg.symbol[sizeof(msg.symbol) - 1] = '\0';
     msg.price    = ev.trade.price;
     msg.quantity = ev.trade.quantity;

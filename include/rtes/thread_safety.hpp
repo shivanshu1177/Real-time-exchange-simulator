@@ -15,7 +15,12 @@
 namespace rtes {
 
 // Thread safety annotations
+// Clang thread-safety analysis attributes; GCC does not support them.
+#if defined(__clang__)
 #define THREAD_ANNOTATION(x) __attribute__((x))
+#else
+#define THREAD_ANNOTATION(x)
+#endif
 #define GUARDED_BY(x) THREAD_ANNOTATION(guarded_by(x))
 #define REQUIRES(x) THREAD_ANNOTATION(requires_capability(x))
 #define EXCLUDES(x) THREAD_ANNOTATION(locks_excluded(x))

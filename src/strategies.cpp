@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <unistd.h>
+#include <algorithm>
 #include <cstring>
 #include <iostream>
 #include <chrono>
@@ -91,7 +92,8 @@ bool LiquidityTakerStrategy::send_order(uint8_t side, uint64_t price, uint32_t q
     NewOrderMessage msg{};
     msg.client_order_id = next_order_id_++;
     msg.client_id       = 1001;
-    std::strncpy(msg.symbol, symbol_.c_str(), 8);
+    // msg is zero-initialised, so this null-pads the 8-byte wire field
+    std::memcpy(msg.symbol, symbol_.data(), std::min(symbol_.size(), sizeof(msg.symbol)));
     msg.side       = side;
     msg.order_type = 1; // LIMIT
     msg.price      = price;
@@ -170,7 +172,8 @@ bool MarketMakerStrategy::send_order(uint8_t side, uint64_t price, uint32_t quan
     NewOrderMessage msg{};
     msg.client_order_id = next_order_id_++;
     msg.client_id       = 1002;
-    std::strncpy(msg.symbol, symbol_.c_str(), 8);
+    // msg is zero-initialised, so this null-pads the 8-byte wire field
+    std::memcpy(msg.symbol, symbol_.data(), std::min(symbol_.size(), sizeof(msg.symbol)));
     msg.side       = side;
     msg.order_type = 1; // LIMIT
     msg.price      = price;

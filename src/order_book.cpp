@@ -1,6 +1,8 @@
 #include "rtes/order_book.hpp"
 #include "rtes/logger.hpp"
 
+#include <algorithm>
+
 namespace rtes {
 
 OrderBook::OrderBook(const std::string& symbol, OrderPool& pool, TradeCallback cb)
