@@ -1,19 +1,19 @@
 #include "rtes/matching_engine.hpp"
 #include "rtes/logger.hpp"
+#include <algorithm>
 #include <cstring>
 
 namespace rtes {
 
 MatchingEngine::MatchingEngine(const std::string& symbol, uint32_t symbol_index,
-                               OrderPool& pool, size_t queue_capacity)
+                               OrderPool& pool, size_t queue_capacity, size_t max_orders,
+                               StpMode stp)
     : symbol_(symbol), symbol_index_(symbol_index), pool_(pool),
       input_queue_(std::make_unique<SPSCQueue<OrderRequest>>(queue_capacity)),
       event_queue_(std::make_unique<SPSCQueue<ExecEvent>>(queue_capacity))
 {
-    book_ = std::make_unique<OrderBook>(symbol, pool,
-        [this](const Trade& trade, const Order& aggressor, const Order& passive) {
-            on_trade(trade, aggressor, passive);
-        });
+    std::memcpy(symbol8_, symbol_.data(), std::min(symbol_.size(), sizeof(symbol8_)));
+    book_ = std::make_unique<OrderBook>(symbol, pool, max_orders, static_cast<BookListener*>(this), stp);
 }
 
 MatchingEngine::~MatchingEngine() {
@@ -101,6 +101,14 @@ static ExecEvent order_event(const Order& o, ExecType type) {
 
 void MatchingEngine::process_new_order(Order* order) {
     orders_processed_.fetch_add(1, std::memory_order_relaxed);
+    if (order->type == OrderType::LIMIT && book_->full()) {
+        ExecEvent ev = order_event(*order, ExecType::REJECTED);
+        ev.leaves_qty = 0;
+        ev.reason     = RejectReason::SYSTEM_BUSY;
+        emit(ev);
+        pool_.release(order);
+        return;
+    }
     // NEW is reported before any fill so the client always sees it first.
     emit(order_event(*order, ExecType::NEW));
     book_->add_order(order);
@@ -152,7 +160,7 @@ void MatchingEngine::process_modify(const OrderRequest& req) {
     book_->modify_order(req.order_id, req.new_price, req.new_quantity);
 }
 
-void MatchingEngine::on_trade(const Trade& trade, const Order& aggressor, const Order& passive) {
+void MatchingEngine::on_trade(const Order& aggressor, const Order& passive, const Trade& trade) {
     trades_executed_.fetch_add(1, std::memory_order_relaxed);
     for (const Order* o : {&aggressor, &passive}) {
         ExecEvent ev = order_event(*o, o->is_filled() ? ExecType::FILL : ExecType::PARTIAL_FILL);
@@ -161,13 +169,15 @@ void MatchingEngine::on_trade(const Trade& trade, const Order& aggressor, const 
         ev.last_qty = trade.quantity;
         emit(ev);
     }
-    publish_trade(trade);
+    if (market_data_queue_) market_data_queue_->push(MarketDataEvent(trade, symbol8_));
 }
 
-void MatchingEngine::publish_trade(const Trade& trade) {
-    if (!market_data_queue_) return;
-    MarketDataEvent ev(trade);
-    market_data_queue_->push(ev);
+void MatchingEngine::on_book_cancel(const Order& order, CancelCause cause) {
+    ExecEvent ev = order_event(order, ExecType::CANCELED);
+    ev.leaves_qty = 0;
+    ev.reason     = (cause == CancelCause::SELF_TRADE) ? RejectReason::SELF_TRADE
+                                                       : RejectReason::NO_LIQUIDITY;
+    emit(ev);
 }
 
 void MatchingEngine::publish_bbo_update() {
@@ -175,12 +185,11 @@ void MatchingEngine::publish_bbo_update() {
 
     MarketDataEvent ev;
     ev.type = MarketDataEvent::BBO_UPDATE;
-    std::strncpy(ev.symbol, symbol_.c_str(), sizeof(ev.symbol) - 1);
-    ev.symbol[sizeof(ev.symbol) - 1] = '\0';
+    std::memcpy(ev.symbol, symbol8_, sizeof(ev.symbol));
     ev.bbo.bid_price    = book_->best_bid();
-    ev.bbo.bid_quantity = 0;
+    ev.bbo.bid_quantity = book_->best_bid_quantity();
     ev.bbo.ask_price    = book_->best_ask();
-    ev.bbo.ask_quantity = 0;
+    ev.bbo.ask_quantity = book_->best_ask_quantity();
     market_data_queue_->push(ev);
 }
 

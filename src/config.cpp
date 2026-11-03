@@ -189,6 +189,10 @@ std::unique_ptr<Config> Config::load_from_file(const std::string& path) {
             sc.tick_size       = extract_double(block, "tick_size");
             sc.lot_size        = extract_uint64(block, "lot_size");
             sc.price_collar_pct= extract_double(block, "price_collar_pct");
+            const auto stp     = extract_string(block, "stp");
+            sc.stp_mode        = stp == "cancel_maker" ? StpMode::CANCEL_MAKER
+                               : stp == "cancel_both"  ? StpMode::CANCEL_BOTH
+                                                       : StpMode::CANCEL_TAKER;
             if (!sc.symbol.empty()) cfg->symbols.push_back(sc);
         }
     }

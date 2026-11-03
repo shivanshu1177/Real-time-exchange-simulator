@@ -171,14 +171,15 @@ bool LiquidityTakerStrategy::recv_ack() {
 
 void LiquidityTakerStrategy::run(std::chrono::seconds duration) {
     std::uniform_int_distribution<int>      side_dist(0, 1);
-    std::uniform_int_distribution<uint64_t> price_dist(1490000, 1510000); // $149–$151
+    // $149.00–$151.00 on the 0.01 tick (fixed-point: 100 units per tick)
+    std::uniform_int_distribution<uint64_t> tick_dist(14900, 15100);
     std::uniform_int_distribution<uint32_t> qty_dist(1, 100);
 
     auto deadline = std::chrono::steady_clock::now() + duration;
 
     while (std::chrono::steady_clock::now() < deadline) {
         uint8_t  side  = static_cast<uint8_t>(side_dist(rng_));
-        uint64_t price = price_dist(rng_);
+        uint64_t price = tick_dist(rng_) * 100;
         uint32_t qty   = qty_dist(rng_);
 
         auto t0 = now_ns();

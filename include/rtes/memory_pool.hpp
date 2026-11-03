@@ -40,6 +40,15 @@ public:
         return nullptr;
     }
 
+    // Number of free slots. Walks the free list: for tests and diagnostics
+    // only, and only when no other thread is using the pool.
+    size_t available() const noexcept {
+        size_t n = 0;
+        for (Node* node = head_.load(std::memory_order_acquire); node; node = node->next) ++n;
+        return n;
+    }
+    size_t capacity() const noexcept { return storage_.size(); }
+
     // Lock-free release — pushes the node back onto the free-list.
     void release(T* ptr) noexcept {
         if (!ptr) return;

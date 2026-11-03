@@ -54,6 +54,10 @@ enum class RejectReason : uint8_t {
     TOO_LATE           = 13,  // order filled or cancelled before the request arrived
     SYSTEM_BUSY        = 14,  // internal queue or pool full; nothing was changed
     NOT_LOGGED_IN      = 15,  // order request before a successful LOGON
+    OFF_TICK           = 16,  // price is not a multiple of the symbol's tick size
+    OFF_LOT            = 17,  // quantity is not a multiple of the symbol's lot size
+    NO_LIQUIDITY       = 18,  // CANCELED: unfilled remainder of a market order
+    SELF_TRADE         = 19,  // CANCELED: self-trade prevention
 };
 
 // Why the exchange is closing a session. Values are part of the protocol.

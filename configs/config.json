@@ -12,19 +12,22 @@
       "symbol": "AAPL",
       "tick_size": 0.01,
       "lot_size": 1,
-      "price_collar_pct": 10.0
+      "price_collar_pct": 10.0,
+      "stp": "cancel_taker"
     },
     {
       "symbol": "MSFT", 
       "tick_size": 0.01,
       "lot_size": 1,
-      "price_collar_pct": 10.0
+      "price_collar_pct": 10.0,
+      "stp": "cancel_taker"
     },
     {
       "symbol": "GOOGL",
       "tick_size": 0.01,
       "lot_size": 1,
-      "price_collar_pct": 10.0
+      "price_collar_pct": 10.0,
+      "stp": "cancel_taker"
     }
   ],
   "risk": {

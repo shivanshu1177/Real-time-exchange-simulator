@@ -184,7 +184,6 @@ void GatewayCore::on_new_order(SessionId session, const NewOrderMessage& msg) {
     order->client_id       = s.client_id;   // never the payload's client_id
     order->session_id      = session;
     order->client_order_id = msg.client_order_id;
-    order->symbol          = engines_[idx]->symbol();
     order->side            = static_cast<Side>(msg.side);
     order->type            = type;
     order->price           = price;

@@ -13,8 +13,13 @@ int main() {
 
     OrderPool pool(TOTAL);
 
-    size_t trade_count = 0;
-    OrderBook book("AAPL", pool, [&trade_count](const Trade&, const Order&, const Order&) { ++trade_count; });
+    struct Counter : BookListener {
+        size_t trades = 0;
+        void on_trade(const Order&, const Order&, const Trade&) override { ++trades; }
+        void on_book_cancel(const Order&, CancelCause) override {}
+    } counter;
+    size_t& trade_count = counter.trades;
+    OrderBook book("AAPL", pool, TOTAL, &counter);
 
     std::mt19937 gen(42);
     std::uniform_int_distribution<Price>    price_dist(14900, 15100);
@@ -25,9 +30,9 @@ int main() {
     for (size_t i = 0; i < WARMUP; ++i) {
         auto* o = pool.acquire();
         if (!o) break;
+        // Distinct client per order, so self-trade prevention never applies.
         *o = Order{.order_id  = i + 1,
-                   .client_id = 0,
-                   .symbol    = "AAPL",
+                   .client_id = i + 1,
                    .side      = static_cast<Side>(side_dist(gen)),
                    .type      = OrderType::LIMIT,
                    .price     = price_dist(gen),
@@ -42,8 +47,7 @@ int main() {
         auto* o = pool.acquire();
         if (!o) break;
         *o = Order{.order_id  = WARMUP + i + 1,
-                   .client_id = 0,
-                   .symbol    = "AAPL",
+                   .client_id = WARMUP + i + 1,
                    .side      = static_cast<Side>(side_dist(gen)),
                    .type      = OrderType::LIMIT,
                    .price     = price_dist(gen),

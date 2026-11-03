@@ -17,14 +17,20 @@ This is a work in progress. What exists today, with tests:
   - Rejects carry a specific reason.
   - Execution reports go to both sides of every fill.
   - Order ids are assigned by the exchange, and ownership is enforced per session.
-- **Matching:** limit and market orders, price-time priority, one writer thread per symbol.
-- **Market data:** UDP multicast on 239.0.0.1:9999, BBO (prices only) and trades.
+- **Matching:** one writer thread per symbol, price-time priority.
+  - Limit orders, and market orders that behave as immediate-or-cancel.
+  - Self-trade prevention, and tick/lot checks.
+  - O(1) cancel.
+  - Checked against a reference book by a differential test (100 seeds × 100,000 random operations).
+- **Market data:** UDP multicast on 239.0.0.1:9999, BBO (with quantities) and trades.
 
 Not working yet, and tracked in [KNOWN_ISSUES](docs/KNOWN_ISSUES.md):
 - No authentication (the logon's API key is not checked).
-- BBO quantities are always 0.
-- No self-trade prevention.
-- No tick or lot checks.
+- Risk:
+  - The price collar's reference price is fixed at 150.00.
+  - Notional exposure is never released.
+  - Every reject is logged.
+- The order pool's lock-free free list is only safe with one acquiring thread.
 
 Planned work is in the [ROADMAP](docs/ROADMAP.md): depth, metrics, determinism, perps, a market-making venue,
 and measured benchmarks. No performance figures are claimed until benchmark results are committed to the repo.

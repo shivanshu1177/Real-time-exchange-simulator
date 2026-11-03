@@ -29,8 +29,9 @@ void Exchange::initialize_risk_manager() {
 void Exchange::initialize_matching_engines() {
     uint32_t index = 0;
     for (const auto& sym : config_->symbols) {
-        matching_engines_.push_back(
-            std::make_unique<MatchingEngine>(sym.symbol, index++, *order_pool_));
+        matching_engines_.push_back(std::make_unique<MatchingEngine>(
+            sym.symbol, index++, *order_pool_, config_->performance.queue_capacity,
+            config_->performance.order_pool_size, sym.stp_mode));
         LOG_INFO("Exchange: matching engine initialised for " + sym.symbol);
     }
 }

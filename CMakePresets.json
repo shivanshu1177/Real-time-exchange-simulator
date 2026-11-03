@@ -59,7 +59,12 @@
       "output": { "outputOnFailure": true },
       "execution": { "noTestsAction": "error" }
     },
-    { "name": "debug",   "inherits": "base", "configurePreset": "debug" },
+    {
+      "name": "debug",
+      "inherits": "base",
+      "configurePreset": "debug",
+      "environment": { "RTES_DIFF_SEEDS": "20" }
+    },
     { "name": "release", "inherits": "base", "configurePreset": "release" },
     {
       "name": "asan",
@@ -67,7 +72,9 @@
       "configurePreset": "asan",
       "environment": {
         "ASAN_OPTIONS": "detect_leaks=1:abort_on_error=1",
-        "UBSAN_OPTIONS": "print_stacktrace=1:halt_on_error=1"
+        "UBSAN_OPTIONS": "print_stacktrace=1:halt_on_error=1",
+        "RTES_DIFF_SEEDS": "10",
+        "RTES_DIFF_OPS": "20000"
       }
     },
     {
@@ -75,7 +82,9 @@
       "inherits": "base",
       "configurePreset": "tsan",
       "environment": {
-        "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1"
+        "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1",
+        "RTES_DIFF_SEEDS": "10",
+        "RTES_DIFF_OPS": "20000"
       }
     }
   ]

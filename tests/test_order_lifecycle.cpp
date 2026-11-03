@@ -512,3 +512,72 @@ TEST_F(Lifecycle, CloseSessionWithoutCancelOnDisconnectKeepsOrders) {
     for (auto& m : take()) if (type_of(er(m)) == ExecType::FILL) ++fills;
     EXPECT_EQ(fills, 1);   // only B is left to be told
 }
+
+TEST_F(Lifecycle, OffTickAndOffLotAreRejected) {
+    symbols[0].lot_size = 10;                 // AAPL: tick 0.01, lot 10
+    make_gateway();
+    buy(A, 1, px(150) + 50, 10);              // 150.005: not a multiple of 0.01
+    expect_rejected(RejectReason::OFF_TICK);
+    buy(A, 2, px(150), 15);
+    expect_rejected(RejectReason::OFF_LOT);
+    rest(A, 3, 0, px(150.01), 20);
+    modify(A, 3, px(150) + 1, 20);
+    pump();
+    EXPECT_EQ(static_cast<RejectReason>(cr(take().at(0)).reject_reason), RejectReason::OFF_TICK);
+}
+
+TEST_F(Lifecycle, MarketOrderRemainderIsCancelledWithNoLiquidity) {
+    rest(B, 1, 1, px(150), 4);
+    new_order(A, 1, 0, 0, 10, "AAPL", /*MARKET*/ 0);
+    pump();
+    std::vector<Report> mine;
+    for (auto& m : take()) if (m.session == A) mine.push_back(er(m));
+    ASSERT_EQ(mine.size(), 3u);
+    EXPECT_EQ(type_of(mine[0]), ExecType::NEW);
+    EXPECT_EQ(type_of(mine[1]), ExecType::PARTIAL_FILL);
+    EXPECT_EQ(type_of(mine[2]), ExecType::CANCELED);
+    EXPECT_EQ(static_cast<RejectReason>(mine[2].reject_reason), RejectReason::NO_LIQUIDITY);
+    EXPECT_EQ(mine[2].cum_qty, 4u);
+    EXPECT_EQ(mine[2].leaves_qty, 0u);
+    EXPECT_EQ(gw->live_orders(A), 0u);
+}
+
+TEST_F(Lifecycle, SelfTradeIsPreventedAndReported) {
+    OrderID sell_id = rest(A, 1, 1, px(150), 10);
+    buy(A, 2, px(150), 5);                    // same client: default STP cancels the taker
+    pump();
+    auto msgs = take();
+    ASSERT_EQ(msgs.size(), 2u);
+    EXPECT_EQ(type_of(er(msgs[0])), ExecType::NEW);
+    auto c = er(msgs[1]);
+    EXPECT_EQ(type_of(c), ExecType::CANCELED);
+    EXPECT_EQ(c.client_order_id, 2u);
+    EXPECT_EQ(static_cast<RejectReason>(c.reject_reason), RejectReason::SELF_TRADE);
+    cancel(A, 0, sell_id);                    // the resting sell is untouched
+    pump();
+    auto r = er(take().at(0));
+    EXPECT_EQ(type_of(r), ExecType::CANCELED);
+    EXPECT_EQ(r.cum_qty, 0u);
+}
+
+TEST_F(Lifecycle, BboUpdatesCarryRealQuantities) {
+    MPMCQueue<MarketDataEvent> md(1024);
+    aapl.set_market_data_queue(&md);
+    rest(A, 1, 0, px(150), 10);
+    rest(A, 2, 0, px(150), 5);
+    rest(B, 1, 1, px(151), 7);
+    sell(B, 2, px(150), 3);                   // takes 3 from the bid
+    pump();
+    MarketDataEvent ev, last_bbo;
+    int trades = 0;
+    while (md.pop(ev)) {
+        if (ev.type == MarketDataEvent::BBO_UPDATE) last_bbo = ev;
+        else ++trades;
+    }
+    EXPECT_EQ(trades, 1);
+    EXPECT_EQ(last_bbo.bbo.bid_price, px(150));
+    EXPECT_EQ(last_bbo.bbo.bid_quantity, 12u);
+    EXPECT_EQ(last_bbo.bbo.ask_price, px(151));
+    EXPECT_EQ(last_bbo.bbo.ask_quantity, 7u);
+    aapl.set_market_data_queue(nullptr);
+}

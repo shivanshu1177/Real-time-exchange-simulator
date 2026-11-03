@@ -1,5 +1,7 @@
 #pragma once
 
+#include "rtes/types.hpp"
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <memory>
@@ -8,9 +10,10 @@ namespace rtes {
 
 struct SymbolConfig {
     std::string symbol;
-    double tick_size;
-    uint64_t lot_size;
+    double tick_size;          // in currency units, e.g. 0.01
+    uint64_t lot_size;         // quantity must be a multiple of this
     double price_collar_pct;
+    StpMode stp_mode{StpMode::CANCEL_TAKER};
 };
 
 struct ExchangeConfig {

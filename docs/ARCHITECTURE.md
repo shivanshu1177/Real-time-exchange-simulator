@@ -44,20 +44,28 @@ TCP client ⇄ gateway thread ── OrderRequest (SPSC, per engine) ──→ m
 ## Memory
 - `OrderPool` (`include/rtes/memory_pool.hpp`): fixed-size pool of `Order` objects (`order_pool_size` in config,
   1M by default) with a CAS-based free list. Safe only with a single acquiring thread (KNOWN_ISSUES P1).
-- The gateway thread is the only thread that takes orders from the pool; engines return them on fill and cancel. Market orders that find no
-  liquidity are not returned (KNOWN_ISSUES B3).
-- `Order` and `Trade` still contain a `std::string` symbol (KNOWN_ISSUES B6).
+- The gateway thread is the only thread that takes orders from the pool. Engines return them when they are
+  filled, cancelled or rejected.
 
 ## Order book (`include/rtes/order_book.hpp`)
 ```cpp
 std::map<Price, PriceLevel, std::greater<Price>> bids_;   // best bid first
 std::map<Price, PriceLevel>                      asks_;   // best ask first
-std::unordered_map<OrderID, Order*>              order_lookup_;
-// PriceLevel: price, std::deque<Order*> FIFO, total_quantity
+FlatMap<Order*>                                  lookup_; // resting orders by id, fixed capacity
+// PriceLevel: price, total_quantity, order_count, head/tail of an intrusive FIFO of Order
 ```
-Matching walks the best level first (price-time priority). Trades are reported through a `std::function`
-callback to the engine, which publishes them. The book also holds a mutex, which the single-writer design
-does not need.
+- Single writer, no locks. Matching walks the best level from its head (price-time priority) and fills at
+  the resting order's price.
+- Each `Order` carries `prev`/`next` links, so a cancel is one hash lookup plus an O(1) unlink.
+- `std::map` allocates a node only when a new price level appears, never per order. The id lookup is
+  allocated once, sized by `order_pool_size`.
+- Market orders are immediate-or-cancel. Self-trade prevention is per symbol (`cancel_taker`, `cancel_maker`,
+  `cancel_both`).
+- The book reports fills and its own cancels (self-trade, no liquidity) through a `BookListener`, implemented
+  by the engine. Each callback runs before the order is returned to the pool.
+- Correctness is checked by a differential test against a naive reference book
+  (`tests/reference_book.hpp`, `tests/test_book_differential.cpp`): 100 seeds × 100,000 random operations,
+  comparing every fill, cancel and depth level after every operation.
 
 ## Network protocols
 Exact message layouts are in [API.md](API.md).
@@ -68,7 +76,6 @@ Exact message layouts are in [API.md](API.md).
 
 ## Configuration
 `configs/config.json`, parsed by `src/config.cpp`. Loaded but not yet used:
-- `tick_size`, `lot_size`
 - `metrics_port`
 - `enable_cpu_pinning`
 - `persistence.*`

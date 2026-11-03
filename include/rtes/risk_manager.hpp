@@ -40,14 +40,17 @@ private:
     RiskConfig risk_config_;
     std::vector<double>   price_collar_pct_;   // by symbol index
     std::vector<uint64_t> reference_prices_;   // by symbol index, fixed-point
+    std::vector<Price>    tick_;               // by symbol index, fixed-point (0.01 -> 100)
+    std::vector<Quantity> lot_;                // by symbol index
 
     std::unordered_map<ClientID, ClientRiskState> client_states_;
 
     std::atomic<uint64_t> orders_accepted_{0};
     std::atomic<uint64_t> orders_rejected_{0};
 
-    RejectReason check_size_and_collar(uint32_t symbol_index, OrderType type,
-                                       Price price, Quantity quantity);
+    // Checks that do not depend on client state: lot, tick, size, collar.
+    RejectReason check_static(uint32_t symbol_index, OrderType type,
+                              Price price, Quantity quantity);
     RejectReason reject(RejectReason r);
 };
 

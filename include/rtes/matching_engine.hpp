@@ -52,7 +52,7 @@ struct ExecEvent {
     }
 };
 
-// POD trade data for use inside the union (Trade itself has std::string)
+// POD trade data for use inside the union
 struct TradeData {
     TradeID  trade_id{0};
     OrderID  buy_order_id{0};
@@ -78,24 +78,25 @@ struct MarketDataEvent {
 
     MarketDataEvent() : type(BBO_UPDATE), bbo{} {}
 
-    explicit MarketDataEvent(const Trade& t) : type(TRADE), trade{} {
+    MarketDataEvent(const Trade& t, const char (&sym)[8]) : type(TRADE), trade{} {
         trade.trade_id      = t.trade_id;
         trade.buy_order_id  = t.buy_order_id;
         trade.sell_order_id = t.sell_order_id;
         trade.price         = t.price;
         trade.quantity      = t.quantity;
-        std::strncpy(symbol, t.symbol.c_str(), sizeof(symbol) - 1);
-        symbol[sizeof(symbol) - 1] = '\0';
+        std::memcpy(symbol, sym, sizeof(symbol));
     }
 };
 
-class MatchingEngine {
+class MatchingEngine : private BookListener {
 public:
     // symbol_index is this engine's position in the exchange's symbol table;
     // it is encoded in the high bits of every order id the gateway assigns.
+    // max_orders bounds the resting orders of this symbol.
     MatchingEngine(const std::string& symbol, uint32_t symbol_index, OrderPool& pool,
-                   size_t queue_capacity = 65536);
-    ~MatchingEngine();
+                   size_t queue_capacity = 65536, size_t max_orders = 65536,
+                   StpMode stp = StpMode::CANCEL_TAKER);
+    ~MatchingEngine() override;
 
     void start();
     void stop();
@@ -123,8 +124,9 @@ public:
 
 private:
     std::string symbol_;
+    char        symbol8_[8]{};   // NUL-padded wire form
     uint32_t    symbol_index_;
-    [[maybe_unused]] OrderPool& pool_;  // passed to the OrderBook, which owns release; unused here
+    OrderPool&  pool_;   // shared with the book; the engine releases orders it rejects
     std::unique_ptr<OrderBook> book_;
 
     // Threading
@@ -155,11 +157,11 @@ private:
                             CancelRejectResponseTo to);
 
     // Market data publishing
-    void publish_trade(const Trade& trade);
     void publish_bbo_update();
 
-    // Fill callback from the order book
-    void on_trade(const Trade& trade, const Order& aggressor, const Order& passive);
+    // BookListener
+    void on_trade(const Order& aggressor, const Order& passive, const Trade& trade) override;
+    void on_book_cancel(const Order& order, CancelCause cause) override;
 };
 
 } // namespace rtes

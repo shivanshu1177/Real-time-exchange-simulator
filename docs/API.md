@@ -74,6 +74,13 @@ Every request gets exactly one answer, and the answer already reflects the risk 
   Two sessions may use the same `client_order_id` independently.
 - Cancel and modify address an order by `order_id` if non-zero, otherwise by the session's `client_order_id`.
   An order owned by another session is rejected with `NOT_OWNER`.
+- Market orders are immediate-or-cancel: whatever does not trade at once is reported as `CANCELED` with
+  `reject_reason = NO_LIQUIDITY`.
+- Self-trade prevention applies when an order would trade with a resting order of the same `client_id`
+  (from `LOGON`). The mode is set per symbol (`stp` in the config): `cancel_taker` (default) cancels the rest of
+  the incoming order; `cancel_maker` cancels the resting order and keeps matching; `cancel_both` cancels both.
+  Each cancelled order gets `CANCELED` with `reject_reason = SELF_TRADE`.
+- Prices must be multiples of the symbol's tick size and quantities multiples of its lot size.
 - Modify: `new_quantity` is the new total quantity and must exceed what is already filled.
   Same price with a lower quantity keeps time priority; a price change or a higher quantity loses it.
   Market orders cannot be modified.
@@ -98,6 +105,10 @@ Every request gets exactly one answer, and the answer already reflects the risk 
 | 13 | `TOO_LATE` | the order filled or was cancelled while the request was in flight |
 | 14 | `SYSTEM_BUSY` | an internal queue or pool was full; nothing changed |
 | 15 | `NOT_LOGGED_IN` | request before a successful `LOGON` |
+| 16 | `OFF_TICK` | limit or modify price is not a multiple of the symbol's `tick_size` |
+| 17 | `OFF_LOT` | quantity is not a multiple of the symbol's `lot_size` |
+| 18 | `NO_LIQUIDITY` | on `CANCELED`: the unfilled part of a market order |
+| 19 | `SELF_TRADE` | on `CANCELED`: self-trade prevention |
 
 ### Session reject reasons (`SessionRejectReason`, `uint8_t`)
 
@@ -189,7 +200,7 @@ Every request gets exactly one answer, and the answer already reflects the risk 
 | 84 | 4 | `cum_qty` | `uint32_t` | quantity filled so far |
 | 88 | 1 | `exec_type` | `uint8_t` | `ExecType` |
 | 89 | 1 | `side` | `uint8_t` | |
-| 90 | 1 | `reject_reason` | `uint8_t` | `RejectReason` (`REJECTED` only) |
+| 90 | 1 | `reject_reason` | `uint8_t` | `RejectReason`: why it was `REJECTED`, or why the exchange `CANCELED` it (0 for a requested cancel) |
 | 91 | 1 | `_pad` | `uint8_t` | |
 
 ### `CancelRejectMessage` (48 bytes, type 9)
@@ -212,9 +223,9 @@ Every request gets exactly one answer, and the answer already reflects the risk 
 | 0 | 28 | `header` | `MessageHeader` | `sequence` is per publisher |
 | 28 | 8 | `symbol` | `char[8]` | |
 | 36 | 8 | `bid_price` | `uint64_t` | 0 if no bid |
-| 44 | 4 | `bid_quantity` | `uint32_t` | currently always 0 (KNOWN_ISSUES) |
+| 44 | 4 | `bid_quantity` | `uint32_t` | total quantity at the best bid |
 | 48 | 8 | `ask_price` | `uint64_t` | 0 if no ask |
-| 56 | 4 | `ask_quantity` | `uint32_t` | currently always 0 (KNOWN_ISSUES) |
+| 56 | 4 | `ask_quantity` | `uint32_t` | total quantity at the best ask |
 
 ### `TradeUpdateMessage` (76 bytes, type 4)
 

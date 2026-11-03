@@ -1,5 +1,6 @@
 #include "rtes/risk_manager.hpp"
 #include "rtes/logger.hpp"
+#include <cmath>
 
 namespace rtes {
 
@@ -12,6 +13,9 @@ RiskManager::RiskManager(const RiskConfig& risk,
         // Default reference price: $150.00 expressed in the fixed-point unit
         // The protocol uses price * 10000 (i.e. 150.00 -> 1500000)
         reference_prices_.push_back(1500000ULL);
+        const auto tick = static_cast<Price>(std::llround(sc.tick_size * 10000.0));
+        tick_.push_back(tick > 0 ? tick : 1);
+        lot_.push_back(sc.lot_size > 0 ? static_cast<Quantity>(sc.lot_size) : 1);
     }
 }
 
@@ -20,8 +24,11 @@ RejectReason RiskManager::reject(RejectReason r) {
     return r;
 }
 
-RejectReason RiskManager::check_size_and_collar(uint32_t symbol_index, OrderType type,
-                                                Price price, Quantity quantity) {
+RejectReason RiskManager::check_static(uint32_t symbol_index, OrderType type,
+                                       Price price, Quantity quantity) {
+    if (quantity % lot_[symbol_index] != 0) return RejectReason::OFF_LOT;
+    if (type == OrderType::LIMIT && price % tick_[symbol_index] != 0) return RejectReason::OFF_TICK;
+
     // Size limit
     if (quantity > risk_config_.max_order_size) {
         LOG_WARN("Risk: order size " + std::to_string(quantity) +
@@ -48,7 +55,7 @@ RejectReason RiskManager::check_size_and_collar(uint32_t symbol_index, OrderType
 
 RejectReason RiskManager::check_new_order(ClientID client_id, uint32_t symbol_index,
                                           OrderType type, Price price, Quantity quantity) {
-    if (auto r = check_size_and_collar(symbol_index, type, price, quantity);
+    if (auto r = check_static(symbol_index, type, price, quantity);
         r != RejectReason::NONE) {
         return reject(r);
     }
@@ -83,7 +90,7 @@ RejectReason RiskManager::check_new_order(ClientID client_id, uint32_t symbol_in
 
 RejectReason RiskManager::check_modify(ClientID /*client_id*/, uint32_t symbol_index,
                                        Price new_price, Quantity new_quantity) {
-    if (auto r = check_size_and_collar(symbol_index, OrderType::LIMIT, new_price, new_quantity);
+    if (auto r = check_static(symbol_index, OrderType::LIMIT, new_price, new_quantity);
         r != RejectReason::NONE) {
         return reject(r);
     }
