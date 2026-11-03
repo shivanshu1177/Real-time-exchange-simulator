@@ -1,9 +1,12 @@
 #include "rtes/protocol.hpp"
+#include "rtes/net_compat.hpp"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <unistd.h>
+#include <poll.h>
+#include <algorithm>
 #include <iostream>
 #include <string>
 #include <sstream>
@@ -17,6 +20,8 @@ static void usage(const char* prog) {
               << " --order \"SIDE,SYMBOL,QTY,PRICE,TYPE\"\n"
               << "  SIDE  : BUY or SELL\n"
               << "  TYPE  : LIMIT or MARKET\n"
+              << "  --listen-ms N : keep printing reports for N ms of silence (default 300)\n"
+              << "  --client-id N : identity sent in LOGON (default 999)\n"
               << "Example: " << prog
               << " --host localhost --port 8888"
               << " --order \"BUY,AAPL,100,150.00,LIMIT\"\n";
@@ -34,7 +39,7 @@ static bool send_all(int fd, const void* buf, size_t len) {
     const uint8_t* p = static_cast<const uint8_t*>(buf);
     size_t sent = 0;
     while (sent < len) {
-        ssize_t n = ::send(fd, p + sent, len - sent, 0);
+        ssize_t n = ::send(fd, p + sent, len - sent, rtes::net::kSendNoSignal);
         if (n <= 0) return false;
         sent += static_cast<size_t>(n);
     }
@@ -62,12 +67,16 @@ int main(int argc, char* argv[]) {
     std::string host  = "localhost";
     uint16_t    port  = 8888;
     std::string order_str;
+    int         listen_ms = 300;
+    uint64_t    client_id = 999;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if ((arg == "--host" || arg == "-h") && i + 1 < argc) host = argv[++i];
         else if ((arg == "--port" || arg == "-p") && i + 1 < argc) port = static_cast<uint16_t>(std::stoi(argv[++i]));
         else if ((arg == "--order" || arg == "-o") && i + 1 < argc) order_str = argv[++i];
+        else if (arg == "--listen-ms" && i + 1 < argc) listen_ms = std::stoi(argv[++i]);
+        else if (arg == "--client-id" && i + 1 < argc) client_id = std::stoull(argv[++i]);
     }
 
     if (order_str.empty()) { usage(argv[0]); return 1; }
@@ -101,13 +110,29 @@ int main(int argc, char* argv[]) {
         perror("connect"); ::close(fd); ::freeaddrinfo(res); return 1;
     }
     ::freeaddrinfo(res);
+    rtes::net::disable_sigpipe(fd);
     std::cout << "Connected to " << host << ":" << port << "\n";
+
+    // Log on: identity is bound to the session here, not taken from orders.
+    rtes::LogonMessage logon{};
+    logon.protocol_version = rtes::PROTOCOL_VERSION;
+    logon.client_id        = client_id;
+    rtes::seal_message(logon, rtes::MessageType::LOGON, 0, now_ns());
+    rtes::LogonAckMessage ack{};
+    if (!send_all(fd, &logon, sizeof(logon)) || !recv_all(fd, &ack.header, sizeof(ack.header)) ||
+        static_cast<rtes::MessageType>(ack.header.type) != rtes::MessageType::LOGON_ACK ||
+        !recv_all(fd, reinterpret_cast<uint8_t*>(&ack) + sizeof(ack.header), sizeof(ack) - sizeof(ack.header))) {
+        std::cerr << "Logon failed\n";
+        ::close(fd);
+        return 1;
+    }
+    std::cout << "Logged on, session " << ack.session_id << "\n";
 
     // Build NewOrderMessage
     rtes::NewOrderMessage msg{};
     msg.client_order_id = now_ns(); // unique per invocation
-    msg.client_id       = 999;
-    std::strncpy(msg.symbol, symbol.c_str(), 8);
+    // msg is zero-initialised, so this null-pads the 8-byte wire field
+    std::memcpy(msg.symbol, symbol.data(), std::min(symbol.size(), sizeof(msg.symbol)));
     msg.side       = side;
     msg.order_type = otype;
     msg.price      = price;
@@ -123,22 +148,32 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Receive ack
-    rtes::OrderAckMessage ack{};
-    if (!recv_all(fd, &ack, sizeof(ack))) {
-        std::cerr << "Recv failed\n";
-        ::close(fd);
-        return 1;
+    // Print every report for this connection until listen_ms of silence. The
+    // first one answers the order (NEW or REJECTED); fills may follow.
+    static const char* exec_names[] = {"NEW", "PARTIAL_FILL", "FILL", "CANCELED", "REPLACED", "REJECTED"};
+    bool first = true;
+    bool rejected = false;
+    while (true) {
+        struct pollfd pfd{fd, POLLIN, 0};
+        if (::poll(&pfd, 1, first ? 2000 : listen_ms) <= 0) break;
+        rtes::ExecReportMessage rep{};
+        if (!recv_all(fd, &rep, sizeof(rep))) break;
+        if (static_cast<rtes::MessageType>(rep.header.type) != rtes::MessageType::EXEC_REPORT) break;
+        double latency_us = static_cast<double>(now_ns() - t0) / 1000.0;
+        std::cout << "[" << (rep.exec_type < 6 ? exec_names[rep.exec_type] : "?") << "]"
+                  << " order_id=" << rep.order_id
+                  << " client_order_id=" << rep.client_order_id
+                  << " last_qty=" << rep.last_qty
+                  << " last_px=" << static_cast<double>(rep.last_px) / 10000.0
+                  << " leaves=" << rep.leaves_qty
+                  << " cum=" << rep.cum_qty
+                  << " reject_reason=" << static_cast<int>(rep.reject_reason)
+                  << " t=" << latency_us << " us\n";
+        if (first && rep.exec_type == static_cast<uint8_t>(rtes::ExecType::REJECTED)) rejected = true;
+        first = false;
     }
-    uint64_t t1 = now_ns();
-    double latency_us = static_cast<double>(t1 - t0) / 1000.0;
-
-    const char* status_str = (ack.status == 0) ? "ACCEPTED" : "REJECTED";
-    std::cout << "[ACK] order_id=" << ack.order_id
-              << " status=" << status_str
-              << " reason=" << ack.reason
-              << " latency=" << latency_us << " μs\n";
+    if (first) std::cerr << "No response\n";
 
     ::close(fd);
-    return (ack.status == 0) ? 0 : 1;
+    return (first || rejected) ? 1 : 0;
 }

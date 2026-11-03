@@ -1,135 +1,60 @@
-# RTES Performance Guide
+# RTES Performance
 
-## Target SLOs
-- **Throughput**: ≥100,000 orders/sec (single host)
-- **Latency**: avg ≤10μs, p99 ≤100μs, p999 ≤500μs
-- **Deterministic**: Zero allocation hot path, clean backpressure
+## Results
+Results live in [`bench/results/`](../bench/results/). Each file records the machine, OS, compiler, build flags
+and git commit that produced it. Run `./scripts/bench.sh` to produce your own, and
+`python3 scripts/plot_bench.py` to redraw the charts in `docs/img/` (shown in the README) from the latest runs.
 
-## System Requirements
+First published results: Apple M2 (Mac14,2), macOS 26.3, Apple Clang 21, 3 runs at commit `e8e65d6`. Typical
+cost per operation: add 39.7 ns, cancel 39.8 ns, match (one fill) 18.7 ns, modify 48.5 ns. p99.99 is at most
+209 ns.
 
-### Hardware
-- CPU: 8+ cores, 3.0+ GHz (Intel Xeon/AMD EPYC recommended)
-- RAM: 16GB+ (32GB for production)
-- Network: 10Gbps+ NIC with SR-IOV support
-- Storage: NVMe SSD for logging (optional)
+What is measured today: **order book operations only** (`bench_book`). It is single-threaded and in process:
+add a passive order, cancel, an aggressive order that makes exactly one fill, and a modify that keeps priority.
+It runs on a book that stays at 10,000 resting orders over 100 price levels.
 
-### OS Configuration
+What is **not** measured yet: anything wire-to-wire (TCP, the gateway, risk, the queues between threads). That
+needs an open-loop load generator and percentiles from send to execution report, and it is planned in the
+benchmark milestone (M4 in [ROADMAP.md](ROADMAP.md)). Until then this repo quotes no end-to-end latency or
+throughput.
+
+How to read `bench_book` output:
+- Each operation is timed on its own and recorded in a histogram with three significant digits
+  (`include/rtes/util/histogram.hpp`, tested against exact percentiles). The output gives p50/p90/p99/p99.9/
+  p99.99/max, not a mean.
+- Per-operation times include one clock read, and are quantised to the clock's step. The tool prints both: on
+  Apple Silicon `steady_clock` advances about every 41.7 ns, so values for fast operations are coarse there.
+- `batched/op` is total time divided by operations over batches of 1,000. It is not limited by the clock, so it
+  is the better estimate of typical cost; the percentiles show the spread and the tail.
+
+## Targets (not yet measured)
+- Throughput: 100,000 orders/sec on a single host.
+- Latency, wire to wire: p99 ≤ 100 μs, p99.9 ≤ 500 μs.
+
+These are goals. Nothing in the repo shows they are met.
+
+## Methodology (what the benchmarks must do)
+- Report percentiles (p50/p90/p99/p99.9/max), never a mean alone.
+- Use an open-loop load generator at a fixed offered rate, to avoid coordinated omission.
+- Timestamp at send and at receipt of the execution report.
+- Report fills and the reject rate, so a run that only measures the reject path is visible.
+- Record CPU model, kernel, governor, compiler version, build flags, thread pinning and git sha with every result.
+- Use `-DRTES_NATIVE=ON` only for local runs, and say so in the results.
+
+## Tools
+- `bench_book`: per-operation order book latency percentiles (above). `./scripts/bench.sh` builds it, runs it
+  and saves the results with the machine details.
+- `bench_exchange --symbols AAPL,MSFT --orders N`: drives the TCP gateway. `--orders` only sets the run duration
+  (N/1000 seconds). Its "latency" figure is run time divided by orders sent (1/throughput), not measured per
+  order, and with the default risk config most orders hit the rate limit. Not used for any published number;
+  it will be replaced by the open-loop benchmark.
+- `bench_memory_pool`: pool acquire/release loop.
+
+## Host tuning (general Linux guidance, not yet applied by RTES)
 ```bash
-# Kernel parameters
-echo 'net.core.rmem_max = 268435456' >> /etc/sysctl.conf
-echo 'net.core.wmem_max = 268435456' >> /etc/sysctl.conf
-echo 'net.core.netdev_max_backlog = 5000' >> /etc/sysctl.conf
-
-# CPU isolation (cores 2-7 for exchange)
-echo 'isolcpus=2-7 nohz_full=2-7 rcu_nocbs=2-7' >> /boot/grub/grub.cfg
-
-# Disable CPU frequency scaling
-echo performance > /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
-
-# Huge pages
-echo 1024 > /proc/sys/vm/nr_hugepages
+# Larger socket buffers
+sudo sysctl -w net.core.rmem_max=268435456 net.core.wmem_max=268435456
+# Fixed CPU frequency
+echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
 ```
-
-### Thread Pinning
-```json
-{
-  "performance": {
-    "enable_cpu_pinning": true,
-    "thread_affinity": {
-      "tcp_gateway": 2,
-      "risk_manager": 3,
-      "matching_aapl": 4,
-      "matching_msft": 5,
-      "market_data": 6,
-      "metrics": 7
-    }
-  }
-}
-```
-
-## Benchmarking
-
-### Load Test Setup
-```bash
-# Build optimized binary
-cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-march=native"
-make -j$(nproc)
-
-# Run benchmark
-./bench_exchange --symbols AAPL,MSFT --orders 1000000 --clients 10
-```
-
-### Expected Results
-```
-Symbol: AAPL
-Orders processed: 1,000,000
-Throughput: 125,847 orders/sec
-Latency (μs): avg=7.2, p50=6.8, p90=12.1, p99=45.3, p999=156.2
-Memory: 0 allocations in hot path
-```
-
-## Optimization Techniques
-
-### Memory Layout
-```cpp
-// Cache-line aligned structures
-struct alignas(64) OrderBookLevel {
-    std::atomic<uint64_t> price;
-    std::deque<OrderID> orders;
-    char padding[64 - sizeof(price) - sizeof(orders)];
-};
-```
-
-### Branch Prediction
-```cpp
-// Hot path optimization
-if ([[likely]] order->quantity <= available_quantity) {
-    // Full fill path (common case)
-    execute_trade(order, available_quantity);
-} else {
-    // Partial fill path (rare)
-    execute_partial_trade(order, available_quantity);
-}
-```
-
-### Prefetching
-```cpp
-// Prefetch next order in queue
-if (orders.size() > 1) {
-    __builtin_prefetch(&orders[1], 0, 3);
-}
-```
-
-## Monitoring
-
-### Key Metrics
-- `rtes_orders_total{status="accepted|rejected"}`
-- `rtes_trades_total{symbol}`
-- `rtes_latency_seconds{quantile="0.5|0.9|0.99|0.999"}`
-- `rtes_queue_depth{queue="risk|matching|market_data"}`
-
-### Alerting Thresholds
-- Latency p99 > 100μs
-- Queue depth > 80% capacity
-- Reject rate > 1%
-- Memory usage > 90%
-
-## Troubleshooting
-
-### High Latency
-1. Check CPU frequency scaling disabled
-2. Verify thread pinning active
-3. Monitor queue depths for bottlenecks
-4. Check network buffer sizes
-
-### Low Throughput  
-1. Increase queue capacities
-2. Add more matching engine threads
-3. Optimize risk check logic
-4. Profile with perf/vtune
-
-### Memory Issues
-1. Monitor order pool utilization
-2. Check for memory leaks with valgrind
-3. Verify RAII order lifecycle
-4. Tune pool size in config
+`performance.enable_cpu_pinning` exists in `configs/config.json` but is not implemented yet: no thread is pinned.

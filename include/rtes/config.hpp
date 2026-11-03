@@ -1,5 +1,7 @@
 #pragma once
 
+#include "rtes/types.hpp"
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <memory>
@@ -8,9 +10,11 @@ namespace rtes {
 
 struct SymbolConfig {
     std::string symbol;
-    double tick_size;
-    uint64_t lot_size;
+    double tick_size;          // in currency units, e.g. 0.01
+    uint64_t lot_size;         // quantity must be a multiple of this
     double price_collar_pct;
+    StpMode stp_mode{StpMode::CANCEL_TAKER};
+    double ref_price{0.0};     // collar reference until the first trade; 0 = no collar until then
 };
 
 struct ExchangeConfig {
@@ -19,13 +23,15 @@ struct ExchangeConfig {
     std::string udp_multicast_group;
     uint16_t udp_port;
     uint16_t metrics_port;
+    bool cancel_on_disconnect{true};  // cancel a session's resting orders when it disconnects
 };
 
 struct RiskConfig {
     uint64_t max_order_size;
     double max_notional_per_client;
-    uint32_t max_orders_per_second;
+    uint32_t max_orders_per_second;      // per session (token bucket, burst = one second's worth)
     bool price_collar_enabled;
+    uint32_t max_open_orders_per_client{10000};
 };
 
 struct PerformanceConfig {

@@ -1,2 +1,0 @@
-/usr/bin/ar qc librtes_core.a CMakeFiles/rtes_core.dir/src/order_book.cpp.o
-/usr/bin/ranlib librtes_core.a

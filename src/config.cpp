@@ -101,16 +101,16 @@ Config make_defaults() {
     c.exchange.udp_port           = 9999;
     c.exchange.metrics_port       = 8080;
 
-    c.symbols.push_back({"AAPL",  0.01, 1, 10.0});
-    c.symbols.push_back({"MSFT",  0.01, 1, 10.0});
-    c.symbols.push_back({"GOOGL", 0.01, 1, 10.0});
+    c.symbols.push_back({"AAPL",  0.01, 1, 10.0, StpMode::CANCEL_TAKER, 150.0});
+    c.symbols.push_back({"MSFT",  0.01, 1, 10.0, StpMode::CANCEL_TAKER, 150.0});
+    c.symbols.push_back({"GOOGL", 0.01, 1, 10.0, StpMode::CANCEL_TAKER, 150.0});
 
     c.risk.max_order_size          = 10000;
     c.risk.max_notional_per_client = 1000000.0;
     c.risk.max_orders_per_second   = 1000;
     c.risk.price_collar_enabled    = true;
 
-    c.performance.order_pool_size  = 1000000;
+    c.performance.order_pool_size  = 262144;   // per symbol
     c.performance.queue_capacity   = 65536;
     c.performance.enable_cpu_pinning = false;
     c.performance.tcp_nodelay      = true;
@@ -152,6 +152,8 @@ std::unique_ptr<Config> Config::load_from_file(const std::string& path) {
     if (udp_port) cfg->exchange.udp_port = udp_port;
     auto metrics_port = extract_uint16(content, "metrics_port");
     if (metrics_port) cfg->exchange.metrics_port = metrics_port;
+    auto cod = extract_string(content, "cancel_on_disconnect");
+    if (!cod.empty()) cfg->exchange.cancel_on_disconnect = (cod == "true");
 
     // Risk block
     auto max_order_size = extract_uint64(content, "max_order_size");
@@ -161,6 +163,8 @@ std::unique_ptr<Config> Config::load_from_file(const std::string& path) {
     auto max_ops = extract_uint32(content, "max_orders_per_second");
     if (max_ops) cfg->risk.max_orders_per_second = max_ops;
     cfg->risk.price_collar_enabled = extract_bool(content, "price_collar_enabled");
+    auto max_open = extract_uint32(content, "max_open_orders_per_client");
+    if (max_open) cfg->risk.max_open_orders_per_client = max_open;
 
     // Performance block
     auto pool_size = extract_uint32(content, "order_pool_size");
@@ -187,6 +191,11 @@ std::unique_ptr<Config> Config::load_from_file(const std::string& path) {
             sc.tick_size       = extract_double(block, "tick_size");
             sc.lot_size        = extract_uint64(block, "lot_size");
             sc.price_collar_pct= extract_double(block, "price_collar_pct");
+            sc.ref_price       = extract_double(block, "ref_price");
+            const auto stp     = extract_string(block, "stp");
+            sc.stp_mode        = stp == "cancel_maker" ? StpMode::CANCEL_MAKER
+                               : stp == "cancel_both"  ? StpMode::CANCEL_BOTH
+                                                       : StpMode::CANCEL_TAKER;
             if (!sc.symbol.empty()) cfg->symbols.push_back(sc);
         }
     }
