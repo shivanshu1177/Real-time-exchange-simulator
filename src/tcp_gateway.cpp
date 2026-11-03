@@ -92,11 +92,11 @@ void ClientConnection::close() {
 
 // ---- TcpGateway ----------------------------------------------------------
 
-TcpGateway::TcpGateway(uint16_t port, RiskManager& risk, OrderPool& pool,
+TcpGateway::TcpGateway(uint16_t port, RiskManager& risk,
                        std::vector<MatchingEngine*> engines, bool cancel_on_disconnect,
                        size_t max_connections)
     : port_(port),
-      core_(risk, pool, std::move(engines), *this, 16384, cancel_on_disconnect),
+      core_(risk, std::move(engines), *this, 16384, cancel_on_disconnect),
       max_connections_(max_connections)
 {
     pfds_.reserve(max_connections_ + 1);
@@ -235,6 +235,8 @@ void TcpGateway::worker_loop() {
         }
 
         const size_t events = core_.drain_events();
+        core_.on_tick(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count()));
 
         // Send what this iteration produced; whatever the socket does not
         // take now waits for POLLOUT.

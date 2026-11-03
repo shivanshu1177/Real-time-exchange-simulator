@@ -96,19 +96,20 @@ Every request gets exactly one answer, and the answer already reflects the risk 
 | 4 | `INVALID_SIDE` | side not 0 or 1 |
 | 5 | `INVALID_ORDER_TYPE` | order type not 0 or 1; or modify of a market order |
 | 6 | `ORDER_SIZE_LIMIT` | quantity above `risk.max_order_size` |
-| 7 | `PRICE_COLLAR` | limit price outside the collar |
-| 8 | `RATE_LIMIT` | client above `risk.max_orders_per_second` |
-| 9 | `NOTIONAL_LIMIT` | client above `risk.max_notional_per_client` |
+| 7 | `PRICE_COLLAR` | limit price outside the collar: ± `price_collar_pct` around the last trade (or `ref_price` before the first trade) |
+| 8 | `RATE_LIMIT` | session above `risk.max_orders_per_second` (token bucket, burst of one second's worth) |
+| 9 | `NOTIONAL_LIMIT` | the client's open notional would exceed `risk.max_notional_per_client` (open = resting and not yet filled; released by fills, cancels and rejects) |
 | 10 | `DUPLICATE_ORDER_ID` | `client_order_id` already used by a live order of this session |
 | 11 | `UNKNOWN_ORDER` | no live order with that id for this session |
 | 12 | `NOT_OWNER` | the order belongs to another session |
 | 13 | `TOO_LATE` | the order filled or was cancelled while the request was in flight |
-| 14 | `SYSTEM_BUSY` | an internal queue or pool was full; nothing changed |
+| 14 | `SYSTEM_BUSY` | an internal queue, or the symbol's order pool, was full; nothing changed |
 | 15 | `NOT_LOGGED_IN` | request before a successful `LOGON` |
 | 16 | `OFF_TICK` | limit or modify price is not a multiple of the symbol's `tick_size` |
 | 17 | `OFF_LOT` | quantity is not a multiple of the symbol's `lot_size` |
 | 18 | `NO_LIQUIDITY` | on `CANCELED`: the unfilled part of a market order |
 | 19 | `SELF_TRADE` | on `CANCELED`: self-trade prevention |
+| 20 | `OPEN_ORDER_LIMIT` | client already has `risk.max_open_orders_per_client` live orders |
 
 ### Session reject reasons (`SessionRejectReason`, `uint8_t`)
 

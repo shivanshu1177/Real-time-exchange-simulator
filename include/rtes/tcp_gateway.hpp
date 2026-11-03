@@ -74,7 +74,7 @@ struct GatewayStats {
 // Risk runs inside the core on this thread.
 class TcpGateway : public OutputSink {
 public:
-    TcpGateway(uint16_t port, RiskManager& risk, OrderPool& pool,
+    TcpGateway(uint16_t port, RiskManager& risk,
                std::vector<MatchingEngine*> engines, bool cancel_on_disconnect = true,
                size_t max_connections = 1024);
     ~TcpGateway() override;

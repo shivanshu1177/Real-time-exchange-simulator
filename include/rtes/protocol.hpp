@@ -58,6 +58,7 @@ enum class RejectReason : uint8_t {
     OFF_LOT            = 17,  // quantity is not a multiple of the symbol's lot size
     NO_LIQUIDITY       = 18,  // CANCELED: unfilled remainder of a market order
     SELF_TRADE         = 19,  // CANCELED: self-trade prevention
+    OPEN_ORDER_LIMIT   = 20,  // client already has risk.max_open_orders_per_client live orders
 };
 
 // Why the exchange is closing a session. Values are part of the protocol.

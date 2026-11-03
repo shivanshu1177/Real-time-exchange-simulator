@@ -1,65 +1,77 @@
 #pragma once
 
 #include "types.hpp"
-#include <atomic>
-#include <vector>
+#include <cassert>
 #include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <thread>
 
 namespace rtes {
 
+// Fixed-capacity object pool with a single owner thread.
+//
+// It is NOT thread-safe, by design: every matching engine owns its own pool,
+// and only that engine's thread acquires and releases. Orders cross threads
+// by value (OrderRequest), never as pool pointers, so no lock-free free list
+// (and no ABA problem) is needed. Debug builds assert the single-owner rule
+// and catch double releases. See docs/design/memory.md.
 template<typename T>
 class MemoryPool {
-    // Each node holds an object as its first member so that
-    // reinterpret_cast<Node*>(T*) is valid for standard-layout types.
-    struct alignas(64) Node {
-        T       object;
-        Node*   next{nullptr};
-    };
-
-    std::vector<Node>          storage_;
-    alignas(64) std::atomic<Node*> head_{nullptr};
-
 public:
-    explicit MemoryPool(size_t capacity) : storage_(capacity) {
-        for (size_t i = 0; i + 1 < capacity; ++i)
-            storage_[i].next = &storage_[i + 1];
-        storage_[capacity - 1].next = nullptr;
-        head_.store(&storage_[0], std::memory_order_relaxed);
+    explicit MemoryPool(size_t capacity)
+        : capacity_(capacity),
+          storage_(std::make_unique<T[]>(capacity)),
+          free_(std::make_unique<uint32_t[]>(capacity)),
+          in_use_(std::make_unique<bool[]>(capacity)) {
+        // Hand out low indices first.
+        for (size_t i = 0; i < capacity; ++i) free_[i] = static_cast<uint32_t>(capacity - 1 - i);
+        free_count_ = capacity;
     }
 
-    // Lock-free acquire via CAS on the free-list head. Returns nullptr when
-    // the pool is exhausted — no heap fallback on the hot path.
+    MemoryPool(const MemoryPool&) = delete;
+    MemoryPool& operator=(const MemoryPool&) = delete;
+
+    // Returns nullptr when the pool is exhausted — no heap fallback.
     T* acquire() noexcept {
-        Node* node = head_.load(std::memory_order_acquire);
-        while (node) {
-            if (head_.compare_exchange_weak(node, node->next,
-                    std::memory_order_release,
-                    std::memory_order_acquire))
-                return &node->object;
-        }
-        return nullptr;
+        check_owner();
+        if (free_count_ == 0) return nullptr;
+        const uint32_t i = free_[--free_count_];
+        in_use_[i] = true;
+        return &storage_[i];
     }
 
-    // Number of free slots. Walks the free list: for tests and diagnostics
-    // only, and only when no other thread is using the pool.
-    size_t available() const noexcept {
-        size_t n = 0;
-        for (Node* node = head_.load(std::memory_order_acquire); node; node = node->next) ++n;
-        return n;
+    void release(T* p) noexcept {
+        if (!p) return;
+        check_owner();
+        const size_t i = static_cast<size_t>(p - storage_.get());
+        assert(i < capacity_ && "pointer does not belong to this pool");
+        assert(in_use_[i] && "double release");
+        if (i >= capacity_ || !in_use_[i]) return;
+        in_use_[i] = false;
+        free_[free_count_++] = static_cast<uint32_t>(i);
     }
-    size_t capacity() const noexcept { return storage_.size(); }
 
-    // Lock-free release — pushes the node back onto the free-list.
-    void release(T* ptr) noexcept {
-        if (!ptr) return;
-        // Safe: object is the first member of the standard-layout Node struct.
-        Node* node = reinterpret_cast<Node*>(ptr);
-        Node* head = head_.load(std::memory_order_relaxed);
-        do { node->next = head; }
-        while (!head_.compare_exchange_weak(head, node,
-                std::memory_order_release,
-                std::memory_order_relaxed));
+    size_t available() const noexcept { return free_count_; }
+    size_t capacity() const noexcept { return capacity_; }
+
+private:
+    size_t                      capacity_;
+    std::unique_ptr<T[]>        storage_;
+    std::unique_ptr<uint32_t[]> free_;       // stack of free indices
+    std::unique_ptr<bool[]>     in_use_;
+    size_t                      free_count_{0};
+
+#ifndef NDEBUG
+    std::thread::id owner_{};
+    void check_owner() noexcept {
+        // The first thread to use the pool owns it.
+        if (owner_ == std::thread::id{}) owner_ = std::this_thread::get_id();
+        assert(owner_ == std::this_thread::get_id() && "MemoryPool used from two threads");
     }
+#else
+    void check_owner() noexcept {}
+#endif
 };
 
 using OrderPool = MemoryPool<Order>;

@@ -7,7 +7,7 @@ planned changes in [ROADMAP.md](ROADMAP.md).
 1. **Gateway** (`TcpGateway::worker_loop`): one thread. Accepts connections on port 8888, reads bytes into each
    connection's receive buffer, validates complete frames and hands them to `GatewayCore`. The core handles
    logon, validates requests, runs pre-trade risk synchronously, assigns the exchange order id and routes the
-   request to the symbol's engine. The same thread drains every engine's event queue, queues execution reports
+   request (by value) to the symbol's engine. The same thread drains every engine's event queue, queues execution reports
    in each connection's send buffer and flushes them (waiting for `POLLOUT` when the socket is full).
 2. **Matching engine** (`MatchingEngine::run`): one thread per symbol; the only writer of that symbol's book.
 3. **Market data** (`UdpPublisher::worker_loop`): drains market-data events and sends UDP multicast.
@@ -42,10 +42,23 @@ TCP client ⇄ gateway thread ── OrderRequest (SPSC, per engine) ──→ m
   market-data events into one instance.
 
 ## Memory
-- `OrderPool` (`include/rtes/memory_pool.hpp`): fixed-size pool of `Order` objects (`order_pool_size` in config,
-  1M by default) with a CAS-based free list. Safe only with a single acquiring thread (KNOWN_ISSUES P1).
-- The gateway thread is the only thread that takes orders from the pool. Engines return them when they are
-  filled, cancelled or rejected.
+- Each matching engine owns its order pool (`order_pool_size` orders per symbol). Only the engine thread
+  acquires and releases, so the pool needs no atomics. Orders cross from the gateway by value
+  (`OrderRequest`), never as pointers. See [design/memory.md](design/memory.md).
+- Memory for orders, queues and id tables is allocated at start-up. Per order there is no allocation, except
+  a `std::map` node when an order opens a new price level.
+
+## Risk (`include/rtes/risk_manager.hpp`)
+- Runs on the gateway thread. It is consulted before any reply, and fed by the engines' reports.
+- Price collar: ± `price_collar_pct` (integer basis points) around the symbol's last trade price, or around
+  `ref_price` from the config until the first trade.
+- Per client:
+  - open notional (exact fixed-point integer) and open order count, reserved when an order is accepted;
+  - released by fills, cancels and rejects, and adjusted by modifies.
+  - Clients with nothing open are forgotten, so the table stays bounded.
+- Per session: a token bucket rate limit (`max_orders_per_second`, burst = one second's worth).
+- Rejects are counted by reason. At most one summary log line per second, never one line per reject.
+- A closed session's state is kept until its last order finishes, so cancel-on-disconnect still releases risk.
 
 ## Order book (`include/rtes/order_book.hpp`)
 ```cpp

@@ -35,7 +35,6 @@ int main(int argc, char* argv[]) {
              std::to_string(exc_cfg.tcp_port));
     rtes::TcpGateway gateway(exc_cfg.tcp_port,
                               *exchange.get_risk_manager(),
-                              *exchange.get_order_pool(),
                               exchange.get_engines(),
                               exc_cfg.cancel_on_disconnect);
     if (!gateway.start()) {

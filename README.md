@@ -17,7 +17,14 @@ This is a work in progress. What exists today, with tests:
   - Rejects carry a specific reason.
   - Execution reports go to both sides of every fill.
   - Order ids are assigned by the exchange, and ownership is enforced per session.
-- **Matching:** one writer thread per symbol, price-time priority.
+- **Risk:** synchronous on the gateway thread.
+  - Tick, lot and size checks.
+  - A price collar that follows the last trade.
+  - Per-client open notional and open-order limits, released by fills and cancels.
+  - A per-session token-bucket rate limit.
+  - Reject logging summarised once per second.
+- **Matching:** one writer thread per symbol, price-time priority. Each engine owns its order pool, so no
+  memory is shared across threads.
   - Limit orders, and market orders that behave as immediate-or-cancel.
   - Self-trade prevention, and tick/lot checks.
   - O(1) cancel.
@@ -26,18 +33,13 @@ This is a work in progress. What exists today, with tests:
 
 Not working yet, and tracked in [KNOWN_ISSUES](docs/KNOWN_ISSUES.md):
 - No authentication (the logon's API key is not checked).
-- Risk:
-  - The price collar's reference price is fixed at 150.00.
-  - Notional exposure is never released.
-  - Every reject is logged.
-- The order pool's lock-free free list is only safe with one acquiring thread.
 
 Planned work is in the [ROADMAP](docs/ROADMAP.md): depth, metrics, determinism, perps, a market-making venue,
 and measured benchmarks. No performance figures are claimed until benchmark results are committed to the repo.
 
 ## Architecture
-- **TCP gateway** (port 8888): one thread; binary protocol, synchronous pre-trade risk (size, price collar,
-  rate, notional), execution reports back to clients
+- **TCP gateway** (port 8888): one thread; binary protocol, synchronous pre-trade risk, execution reports
+  back to clients
 - **Matching engine**: one single-writer thread per symbol, price-time priority
 - **Market data**: UDP multicast (239.0.0.1:9999), BBO and trades
 

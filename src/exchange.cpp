@@ -6,7 +6,6 @@ namespace rtes {
 Exchange::Exchange(std::unique_ptr<Config> config)
     : config_(std::move(config))
 {
-    initialize_order_pool();
     initialize_risk_manager();
     initialize_matching_engines();
     initialize_market_data();
@@ -14,12 +13,6 @@ Exchange::Exchange(std::unique_ptr<Config> config)
 }
 
 Exchange::~Exchange() { stop(); }
-
-void Exchange::initialize_order_pool() {
-    order_pool_ = std::make_unique<OrderPool>(config_->performance.order_pool_size);
-    LOG_INFO("Exchange: order pool initialised (" +
-             std::to_string(config_->performance.order_pool_size) + " slots)");
-}
 
 void Exchange::initialize_risk_manager() {
     risk_manager_ = std::make_unique<RiskManager>(config_->risk, config_->symbols);
@@ -29,8 +22,9 @@ void Exchange::initialize_risk_manager() {
 void Exchange::initialize_matching_engines() {
     uint32_t index = 0;
     for (const auto& sym : config_->symbols) {
+        // Each engine owns a pool of order_pool_size orders for its symbol.
         matching_engines_.push_back(std::make_unique<MatchingEngine>(
-            sym.symbol, index++, *order_pool_, config_->performance.queue_capacity,
+            sym.symbol, index++, config_->performance.queue_capacity,
             config_->performance.order_pool_size, sym.stp_mode));
         LOG_INFO("Exchange: matching engine initialised for " + sym.symbol);
     }

@@ -13,31 +13,35 @@
       "tick_size": 0.01,
       "lot_size": 1,
       "price_collar_pct": 10.0,
-      "stp": "cancel_taker"
+      "stp": "cancel_taker",
+      "ref_price": 150.0
     },
     {
       "symbol": "MSFT", 
       "tick_size": 0.01,
       "lot_size": 1,
       "price_collar_pct": 10.0,
-      "stp": "cancel_taker"
+      "stp": "cancel_taker",
+      "ref_price": 150.0
     },
     {
       "symbol": "GOOGL",
       "tick_size": 0.01,
       "lot_size": 1,
       "price_collar_pct": 10.0,
-      "stp": "cancel_taker"
+      "stp": "cancel_taker",
+      "ref_price": 150.0
     }
   ],
   "risk": {
     "max_order_size": 10000,
     "max_notional_per_client": 10000000000.0,
     "max_orders_per_second": 1000,
+    "max_open_orders_per_client": 10000,
     "price_collar_enabled": true
   },
   "performance": {
-    "order_pool_size": 1000000,
+    "order_pool_size": 262144,
     "queue_capacity": 65536,
     "enable_cpu_pinning": false,
     "tcp_nodelay": true,

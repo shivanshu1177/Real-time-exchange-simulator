@@ -6,14 +6,13 @@
 namespace rtes {
 
 MatchingEngine::MatchingEngine(const std::string& symbol, uint32_t symbol_index,
-                               OrderPool& pool, size_t queue_capacity, size_t max_orders,
-                               StpMode stp)
-    : symbol_(symbol), symbol_index_(symbol_index), pool_(pool),
+                               size_t queue_capacity, size_t max_orders, StpMode stp)
+    : symbol_(symbol), symbol_index_(symbol_index), pool_(max_orders),
       input_queue_(std::make_unique<SPSCQueue<OrderRequest>>(queue_capacity)),
       event_queue_(std::make_unique<SPSCQueue<ExecEvent>>(queue_capacity))
 {
     std::memcpy(symbol8_, symbol_.data(), std::min(symbol_.size(), sizeof(symbol8_)));
-    book_ = std::make_unique<OrderBook>(symbol, pool, max_orders, static_cast<BookListener*>(this), stp);
+    book_ = std::make_unique<OrderBook>(symbol, pool_, max_orders, static_cast<BookListener*>(this), stp);
 }
 
 MatchingEngine::~MatchingEngine() {
@@ -50,7 +49,7 @@ size_t MatchingEngine::poll_once() {
     OrderRequest req;
     while (input_queue_->pop(req)) {
         switch (req.type) {
-            case OrderRequest::NEW_ORDER:    process_new_order(req.order); break;
+            case OrderRequest::NEW_ORDER:    process_new_order(req);       break;
             case OrderRequest::CANCEL_ORDER: process_cancel(req);          break;
             case OrderRequest::MODIFY_ORDER: process_modify(req);          break;
         }
@@ -99,16 +98,31 @@ static ExecEvent order_event(const Order& o, ExecType type) {
     return ev;
 }
 
-void MatchingEngine::process_new_order(Order* order) {
+void MatchingEngine::process_new_order(const OrderRequest& req) {
     orders_processed_.fetch_add(1, std::memory_order_relaxed);
-    if (order->type == OrderType::LIMIT && book_->full()) {
-        ExecEvent ev = order_event(*order, ExecType::REJECTED);
-        ev.leaves_qty = 0;
-        ev.reason     = RejectReason::SYSTEM_BUSY;
+    Order* order = (req.order_type == OrderType::LIMIT && book_->full()) ? nullptr : pool_.acquire();
+    if (!order) {
+        // No room for another order in this symbol: reject, nothing changed.
+        ExecEvent ev;
+        ev.exec_type       = ExecType::REJECTED;
+        ev.reason          = RejectReason::SYSTEM_BUSY;
+        ev.side            = req.side;
+        ev.session_id      = req.session_id;
+        ev.order_id        = req.order_id;
+        ev.client_order_id = req.client_order_id;
+        ev.price           = req.price;
         emit(ev);
-        pool_.release(order);
         return;
     }
+    *order = Order{};
+    order->order_id        = req.order_id;
+    order->client_id       = req.client_id;
+    order->session_id      = req.session_id;
+    order->client_order_id = req.client_order_id;
+    order->side            = req.side;
+    order->type            = req.order_type;
+    order->price           = req.price;
+    order->quantity        = req.quantity;
     // NEW is reported before any fill so the client always sees it first.
     emit(order_event(*order, ExecType::NEW));
     book_->add_order(order);
@@ -148,16 +162,16 @@ void MatchingEngine::process_modify(const OrderRequest& req) {
         emit_cancel_reject(req, RejectReason::INVALID_ORDER_TYPE, CancelRejectResponseTo::MODIFY);
         return;
     }
-    if (req.new_quantity <= o->filled) {
+    if (req.quantity <= o->filled) {
         emit_cancel_reject(req, RejectReason::INVALID_QUANTITY, CancelRejectResponseTo::MODIFY);
         return;
     }
     // REPLACED goes out before any fill the new price may cause.
     ExecEvent ev = order_event(*o, ExecType::REPLACED);
-    ev.price      = req.new_price;
-    ev.leaves_qty = req.new_quantity - o->filled;
+    ev.price      = req.price;
+    ev.leaves_qty = req.quantity - o->filled;
     emit(ev);
-    book_->modify_order(req.order_id, req.new_price, req.new_quantity);
+    book_->modify_order(req.order_id, req.price, req.quantity);
 }
 
 void MatchingEngine::on_trade(const Order& aggressor, const Order& passive, const Trade& trade) {

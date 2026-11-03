@@ -14,10 +14,10 @@ uint64_t now_ns() {
 }
 } // namespace
 
-GatewayCore::GatewayCore(RiskManager& risk, OrderPool& pool,
+GatewayCore::GatewayCore(RiskManager& risk,
                          std::vector<MatchingEngine*> engines, OutputSink& out,
                          size_t max_live_orders_per_session, bool cancel_on_disconnect)
-    : risk_(risk), pool_(pool), engines_(std::move(engines)),
+    : risk_(risk), engines_(std::move(engines)),
       next_order_seq_(engines_.size(), 0), out_(out),
       max_live_orders_(max_live_orders_per_session),
       cancel_on_disconnect_(cancel_on_disconnect)
@@ -31,13 +31,15 @@ GatewayCore::GatewayCore(RiskManager& risk, OrderPool& pool,
 
 SessionId GatewayCore::open_session() {
     SessionId id = next_session_id_++;
-    sessions_.emplace(id, std::make_unique<Session>(max_live_orders_));
+    const double rate = risk_.config().max_orders_per_second;
+    sessions_.emplace(id, std::make_unique<Session>(max_live_orders_, rate, rate));
     return id;
 }
 
 void GatewayCore::close_session(SessionId session) {
     auto it = sessions_.find(session);
-    if (it == sessions_.end()) return;
+    if (it == sessions_.end() || it->second->closed) return;
+    it->second->closed = true;
     if (cancel_on_disconnect_) {
         it->second->live.for_each([&](uint64_t coid, LiveOrder& live) {
             OrderRequest req;
@@ -50,12 +52,12 @@ void GatewayCore::close_session(SessionId session) {
             while (!engines_[live.symbol_index]->submit(req)) std::this_thread::yield();
         });
     }
-    sessions_.erase(it);
+    if (it->second->live.empty()) sessions_.erase(it);
 }
 
 void GatewayCore::reject_session(SessionId session, SessionRejectReason reason, uint32_t detail) {
     auto it = sessions_.find(session);
-    if (it == sessions_.end()) return;
+    if (it == sessions_.end() || it->second->closed) return;
     SessionRejectMessage rej{};
     rej.reason = static_cast<uint8_t>(reason);
     rej.detail = detail;
@@ -65,7 +67,7 @@ void GatewayCore::reject_session(SessionId session, SessionRejectReason reason, 
 
 void GatewayCore::on_logon(SessionId session, const LogonMessage& msg) {
     auto it = sessions_.find(session);
-    if (it == sessions_.end()) return;
+    if (it == sessions_.end() || it->second->closed) return;
     Session& s = *it->second;
     if (s.logged_in) {
         return reject_session(session, SessionRejectReason::DUPLICATE_LOGON, 0);
@@ -131,6 +133,7 @@ void GatewayCore::on_message(SessionId session, const uint8_t* data, size_t len)
 
 void GatewayCore::send_reject(SessionId session, Session& s, const NewOrderMessage& msg,
                               RejectReason r) {
+    risk_.record_reject(r);
     ExecReportMessage rep{};
     rep.order_id        = 0;
     rep.client_order_id = msg.client_order_id;
@@ -145,6 +148,7 @@ void GatewayCore::send_reject(SessionId session, Session& s, const NewOrderMessa
 void GatewayCore::send_cancel_reject(SessionId session, Session& s, uint64_t order_id,
                                      uint64_t client_order_id, RejectReason r,
                                      CancelRejectResponseTo to) {
+    risk_.record_reject(r);
     CancelRejectMessage rej{};
     rej.order_id        = order_id;
     rej.client_order_id = client_order_id;
@@ -155,7 +159,7 @@ void GatewayCore::send_cancel_reject(SessionId session, Session& s, uint64_t ord
 
 void GatewayCore::on_new_order(SessionId session, const NewOrderMessage& msg) {
     auto it = sessions_.find(session);
-    if (it == sessions_.end()) return;
+    if (it == sessions_.end() || it->second->closed) return;
     Session& s = *it->second;
 
     if (!s.logged_in)                                return send_reject(session, s, msg, RejectReason::NOT_LOGGED_IN);
@@ -171,34 +175,28 @@ void GatewayCore::on_new_order(SessionId session, const NewOrderMessage& msg) {
 
     const auto idx = static_cast<uint32_t>(sym);
     const Price price = (type == OrderType::LIMIT) ? msg.price : 0;
-    if (auto r = risk_.check_new_order(s.client_id, idx, type, price, msg.quantity);
+    if (!s.bucket.try_take(now_ns()))                return send_reject(session, s, msg, RejectReason::RATE_LIMIT);
+    Price basis = 0;
+    if (auto r = risk_.check_new_order(s.client_id, idx, type, price, msg.quantity, basis);
         r != RejectReason::NONE) {
         return send_reject(session, s, msg, r);
     }
 
-    Order* order = pool_.acquire();
-    if (!order) return send_reject(session, s, msg, RejectReason::SYSTEM_BUSY);
-
-    const OrderID id = make_order_id(idx, ++next_order_seq_[idx]);
-    order->order_id        = id;
-    order->client_id       = s.client_id;   // never the payload's client_id
-    order->session_id      = session;
-    order->client_order_id = msg.client_order_id;
-    order->side            = static_cast<Side>(msg.side);
-    order->type            = type;
-    order->price           = price;
-    order->quantity        = msg.quantity;
-    order->filled          = 0;
-
-    s.live.insert(msg.client_order_id, LiveOrder{id, idx});
-
     OrderRequest req;
-    req.type       = OrderRequest::NEW_ORDER;
-    req.session_id = session;
-    req.order      = order;
+    req.type            = OrderRequest::NEW_ORDER;
+    req.session_id      = session;
+    req.order_id        = make_order_id(idx, ++next_order_seq_[idx]);
+    req.client_order_id = msg.client_order_id;
+    req.client_id       = s.client_id;   // never the payload's client_id
+    req.side            = static_cast<Side>(msg.side);
+    req.order_type      = type;
+    req.price           = price;
+    req.quantity        = msg.quantity;
+
+    s.live.insert(msg.client_order_id, LiveOrder{req.order_id, idx, basis, msg.quantity, msg.quantity});
     if (!engines_[idx]->submit(req)) {
         s.live.erase(msg.client_order_id);
-        pool_.release(order);
+        risk_.release(s.client_id, basis * msg.quantity, /*order_done=*/true);
         return send_reject(session, s, msg, RejectReason::SYSTEM_BUSY);
     }
     // No reply here: the engine reports NEW (then any fills) in order.
@@ -226,7 +224,7 @@ bool GatewayCore::resolve(Session& s, uint64_t order_id, uint64_t client_order_i
 
 void GatewayCore::on_cancel(SessionId session, const CancelOrderMessage& msg) {
     auto it = sessions_.find(session);
-    if (it == sessions_.end()) return;
+    if (it == sessions_.end() || it->second->closed) return;
     Session& s = *it->second;
 
     if (!s.logged_in) {
@@ -249,7 +247,7 @@ void GatewayCore::on_cancel(SessionId session, const CancelOrderMessage& msg) {
 
 void GatewayCore::on_modify(SessionId session, const ModifyOrderMessage& msg) {
     auto it = sessions_.find(session);
-    if (it == sessions_.end()) return;
+    if (it == sessions_.end() || it->second->closed) return;
     Session& s = *it->second;
 
     auto reject = [&](RejectReason r) {
@@ -258,16 +256,25 @@ void GatewayCore::on_modify(SessionId session, const ModifyOrderMessage& msg) {
     };
 
     OrderRequest req;
-    req.type         = OrderRequest::MODIFY_ORDER;
-    req.session_id   = session;
-    req.new_price    = msg.new_price;
-    req.new_quantity = msg.new_quantity;
+    req.type       = OrderRequest::MODIFY_ORDER;
+    req.session_id = session;
+    req.price      = msg.new_price;
+    req.quantity   = msg.new_quantity;
     if (!s.logged_in) return reject(RejectReason::NOT_LOGGED_IN);
     uint32_t idx = 0;
     if (!resolve(s, msg.order_id, msg.client_order_id, req, idx)) return reject(RejectReason::UNKNOWN_ORDER);
     if (msg.new_quantity == 0) return reject(RejectReason::INVALID_QUANTITY);
     if (msg.new_price == 0)    return reject(RejectReason::INVALID_PRICE);
-    if (auto r = risk_.check_modify(s.client_id, idx, msg.new_price, msg.new_quantity);
+    // Notional before and after, when the order is addressed through this
+    // session's own table; by exchange id the engine checks ownership and the
+    // exposure is adjusted when REPLACED comes back.
+    uint64_t open_now = 0, open_after = 0;
+    if (const LiveOrder* live = req.via_client_order_id ? s.live.find(msg.client_order_id) : nullptr) {
+        const Quantity cum = live->quantity - live->leaves;
+        open_now   = live->open_notional();
+        open_after = msg.new_quantity > cum ? msg.new_price * (msg.new_quantity - cum) : 0;
+    }
+    if (auto r = risk_.check_modify(s.client_id, idx, msg.new_price, msg.new_quantity, open_now, open_after);
         r != RejectReason::NONE) {
         return reject(r);
     }
@@ -286,21 +293,67 @@ size_t GatewayCore::drain_events() {
     return n;
 }
 
+void GatewayCore::on_tick(uint64_t now) {
+    risk_.flush_reject_log(now);
+}
+
 void GatewayCore::handle_event(uint32_t symbol_index, const ExecEvent& ev) {
+    const bool is_fill = ev.kind == ExecEvent::EXEC &&
+        (ev.exec_type == ExecType::PARTIAL_FILL || ev.exec_type == ExecType::FILL);
+    if (is_fill) risk_.on_trade(symbol_index, ev.last_px);   // collar follows the last trade
+
     auto it = sessions_.find(ev.session_id);
-    if (it == sessions_.end()) return;   // session closed; nobody to tell
+    if (it == sessions_.end()) return;
     Session& s = *it->second;
 
     if (ev.kind == ExecEvent::CANCEL_REJECT) {
-        return send_cancel_reject(ev.session_id, s, ev.order_id, ev.client_order_id,
-                                  ev.reason, ev.response_to);
+        if (!s.closed) {
+            send_cancel_reject(ev.session_id, s, ev.order_id, ev.client_order_id,
+                               ev.reason, ev.response_to);
+        }
+        return;
     }
 
-    if (ev.is_terminal()) {
-        // The client order id becomes reusable once the order is done.
-        const LiveOrder* live = s.live.find(ev.client_order_id);
-        if (live && live->order_id == ev.order_id) s.live.erase(ev.client_order_id);
+    // Risk accounting from the engine's report.
+    LiveOrder* live = s.live.find(ev.client_order_id);
+    if (live && live->order_id != ev.order_id) live = nullptr;
+    if (live) {
+        switch (ev.exec_type) {
+            case ExecType::PARTIAL_FILL:
+            case ExecType::FILL:
+                risk_.release(s.client_id, static_cast<uint64_t>(live->notional_basis) * ev.last_qty,
+                              ev.exec_type == ExecType::FILL);
+                live->leaves = ev.leaves_qty;
+                break;
+            case ExecType::REPLACED: {
+                const uint64_t before = live->open_notional();
+                live->notional_basis = ev.price;
+                live->quantity       = ev.leaves_qty + ev.cum_qty;
+                live->leaves         = ev.leaves_qty;
+                risk_.adjust(s.client_id, before, live->open_notional());
+                break;
+            }
+            case ExecType::CANCELED:
+            case ExecType::REJECTED:
+                risk_.release(s.client_id, live->open_notional(), /*order_done=*/true);
+                live->leaves = 0;
+                break;
+            case ExecType::NEW:
+                break;
+        }
+        if (ev.is_terminal()) {
+            // The client order id becomes reusable once the order is done.
+            s.live.erase(ev.client_order_id);
+            live = nullptr;
+        }
     }
+
+    if (s.closed) {
+        if (s.live.empty()) sessions_.erase(it);   // last order of a gone session
+        return;
+    }
+
+    if (ev.exec_type == ExecType::REJECTED) risk_.record_reject(ev.reason);
 
     ExecReportMessage rep{};
     rep.order_id        = ev.order_id;

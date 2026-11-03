@@ -143,14 +143,13 @@ namespace {
 class GatewayTcp : public ::testing::Test {
 protected:
     RiskConfig risk_cfg{10000, 1e12, 100000, true};
-    std::vector<SymbolConfig> symbols{{"AAPL", 0.01, 1, 10.0}};
-    OrderPool pool{4096};
+    std::vector<SymbolConfig> symbols{{"AAPL", 0.01, 1, 10.0, StpMode::CANCEL_TAKER, 150.0}};
     RiskManager risk{risk_cfg, symbols};
-    MatchingEngine aapl{"AAPL", 0, pool, 4096};
+    MatchingEngine aapl{"AAPL", 0, 4096, 4096};
     std::unique_ptr<TcpGateway> gw;
 
     void start(bool cancel_on_disconnect = true) {
-        gw = std::make_unique<TcpGateway>(0, risk, pool, std::vector<MatchingEngine*>{&aapl},
+        gw = std::make_unique<TcpGateway>(0, risk, std::vector<MatchingEngine*>{&aapl},
                                           cancel_on_disconnect);
         ASSERT_TRUE(gw->start());
         aapl.start();

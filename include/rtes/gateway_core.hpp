@@ -29,7 +29,7 @@ public:
 // Single-threaded: every method must be called from the gateway thread.
 class GatewayCore {
 public:
-    GatewayCore(RiskManager& risk, OrderPool& pool,
+    GatewayCore(RiskManager& risk,
                 std::vector<MatchingEngine*> engines,   // index = symbol index
                 OutputSink& out,
                 size_t max_live_orders_per_session = 16384,
@@ -38,13 +38,17 @@ public:
     // Session lifecycle. Allocation happens here, not per order.
     // A new session must LOGON before it may send orders.
     SessionId open_session();
-    // Forget the session. With cancel-on-disconnect, its live orders are
-    // cancelled first (the cancels are queued to the engines; their reports
-    // are dropped because nobody is left to receive them).
+    // The connection is gone. With cancel-on-disconnect, its live orders are
+    // cancelled. The session's state is kept, silently, until its last order
+    // is done, so the engines' reports still release its risk exposure.
     void      close_session(SessionId session);
     // Send SESSION_REJECT and ask the transport to close the connection.
     void      reject_session(SessionId session, SessionRejectReason reason, uint32_t detail);
-    bool      has_session(SessionId session) const { return sessions_.count(session) != 0; }
+    bool      has_session(SessionId session) const {
+        auto it = sessions_.find(session);
+        return it != sessions_.end() && !it->second->closed;
+    }
+    size_t    tracked_sessions() const { return sessions_.size(); }   // includes closed ones with live orders
     size_t    live_orders(SessionId session) const;
 
     // Handle one complete inbound frame that already passed check_inbound_frame().
@@ -57,6 +61,9 @@ public:
 
     // Turn pending engine events into outbound messages. Returns the number handled.
     size_t drain_events();
+
+    // Periodic housekeeping from the transport loop (reject log summary).
+    void on_tick(uint64_t now_ns);
 
     // Exchange order ids carry the symbol index in the top 16 bits so cancels
     // and modifies by order id can be routed without a lookup.
@@ -71,17 +78,22 @@ private:
     struct LiveOrder {
         OrderID  order_id{0};
         uint32_t symbol_index{0};
+        Price    notional_basis{0};   // price risk values this order at
+        Quantity quantity{0};         // current total quantity
+        Quantity leaves{0};           // still open
+        uint64_t open_notional() const { return notional_basis * leaves; }
     };
     struct Session {
-        explicit Session(size_t max_live) : live(max_live) {}
+        Session(size_t max_live, double rate, double burst) : live(max_live), bucket(rate, burst) {}
         FlatMap<LiveOrder> live;      // client_order_id -> live order
+        TokenBucket bucket;           // order rate limit
         uint64_t next_out_seq{1};
         bool     logged_in{false};
+        bool     closed{false};       // connection gone; kept until `live` is empty
         ClientID client_id{0};        // bound at LOGON; payload client_id is ignored
     };
 
     RiskManager&                  risk_;
-    OrderPool&                    pool_;
     std::vector<MatchingEngine*>  engines_;
     std::vector<std::array<char, 8>> symbols_;  // NUL-padded, by symbol index
     std::vector<uint64_t>         next_order_seq_;  // by symbol index

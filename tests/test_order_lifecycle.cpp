@@ -35,11 +35,11 @@ class Lifecycle : public ::testing::Test {
 protected:
     RiskConfig risk_cfg{/*max_order_size*/ 10000, /*max_notional*/ 1e12,
                         /*max_orders_per_second*/ 1000, /*collar*/ true};
-    std::vector<SymbolConfig> symbols{{"AAPL", 0.01, 1, 10.0}, {"MSFT", 0.01, 1, 10.0}};
-    OrderPool pool{1024};
+    std::vector<SymbolConfig> symbols{{"AAPL", 0.01, 1, 10.0, StpMode::CANCEL_TAKER, 150.0},
+                                      {"MSFT", 0.01, 1, 10.0, StpMode::CANCEL_TAKER, 150.0}};
     std::unique_ptr<RiskManager> risk;
-    MatchingEngine aapl{"AAPL", 0, pool, 4096};
-    MatchingEngine msft{"MSFT", 1, pool, 4096};
+    MatchingEngine aapl{"AAPL", 0, 4096, 1024};
+    MatchingEngine msft{"MSFT", 1, 4096, 1024};
     CaptureSink sink;
     std::unique_ptr<GatewayCore> gw;
     SessionId A{}, B{};
@@ -49,7 +49,7 @@ protected:
 
     void make_gateway(bool cancel_on_disconnect = true) {
         risk = std::make_unique<RiskManager>(risk_cfg, symbols);
-        gw = std::make_unique<GatewayCore>(*risk, pool, std::vector<MatchingEngine*>{&aapl, &msft},
+        gw = std::make_unique<GatewayCore>(*risk, std::vector<MatchingEngine*>{&aapl, &msft},
                                            sink, 16384, cancel_on_disconnect);
         A = gw->open_session();
         B = gw->open_session();
@@ -462,9 +462,9 @@ TEST_F(Lifecycle, OrdersBeforeLogonAreRejected) {
 }
 
 TEST_F(Lifecycle, PayloadClientIdIsIgnored) {
-    // Two sessions logged on as client 7 share client 7's rate limit, whatever
-    // client_id their orders carry in the payload.
-    risk_cfg.max_orders_per_second = 1;
+    // Two sessions logged on as client 7 share client 7's open-order limit,
+    // whatever client_id their orders carry in the payload.
+    risk_cfg.max_open_orders_per_client = 1;
     make_gateway();
     SessionId c = gw->open_session();
     SessionId d = gw->open_session();
@@ -485,7 +485,10 @@ TEST_F(Lifecycle, PayloadClientIdIsIgnored) {
     m.client_order_id = 1; m.client_id = 200;   // pretends to be someone else
     seal_message(m, MessageType::NEW_ORDER, 2, 0);
     gw->on_message(d, reinterpret_cast<const uint8_t*>(&m), sizeof(m));
-    expect_rejected(RejectReason::RATE_LIMIT);
+    expect_rejected(RejectReason::OPEN_ORDER_LIMIT);
+    EXPECT_EQ(risk->open_orders(7), 1u);
+    EXPECT_EQ(risk->open_orders(100), 0u);
+    EXPECT_EQ(risk->open_orders(200), 0u);
 }
 
 TEST_F(Lifecycle, CloseSessionCancelsItsRestingOrders) {
@@ -580,4 +583,93 @@ TEST_F(Lifecycle, BboUpdatesCarryRealQuantities) {
     EXPECT_EQ(last_bbo.bbo.ask_price, px(151));
     EXPECT_EQ(last_bbo.bbo.ask_quantity, 7u);
     aapl.set_market_data_queue(nullptr);
+}
+
+TEST_F(Lifecycle, NotionalIsReleasedByCancelAndByFill) {
+    risk_cfg.max_notional_per_client = 2000.0;    // room for one 10 @ 150 order
+    make_gateway();
+    rest(A, 1, 0, px(150), 10);
+    buy(A, 2, px(150), 10);
+    expect_rejected(RejectReason::NOTIONAL_LIMIT);
+
+    cancel(A, 1);
+    pump();
+    take();
+    EXPECT_EQ(risk->open_notional(A), 0u);
+    rest(A, 2, 0, px(150), 10);                   // fits again after the cancel
+
+    sell(B, 1, px(150), 10);                      // fill releases A's exposure
+    pump();
+    take();
+    EXPECT_EQ(risk->open_notional(A), 0u);
+    EXPECT_EQ(risk->open_orders(A), 0u);
+    rest(A, 3, 0, px(150), 10);
+}
+
+TEST_F(Lifecycle, PartialFillReleasesOnlyTheFilledPart) {
+    rest(A, 1, 0, px(150), 10);
+    sell(B, 1, px(150), 4);
+    pump();
+    take();
+    EXPECT_EQ(risk->open_notional(A), px(150) * 6);
+    EXPECT_EQ(risk->open_orders(A), 1u);
+    modify(A, 1, px(149), 8);                     // cum 4: leaves 4 at 149
+    pump();
+    take();
+    EXPECT_EQ(risk->open_notional(A), px(149) * 4);
+}
+
+TEST_F(Lifecycle, DisconnectReleasesExposureThroughTheCancels) {
+    rest(A, 1, 0, px(150), 10);
+    rest(A, 2, 0, px(149), 10);
+    EXPECT_EQ(risk->open_orders(A), 2u);
+    gw->close_session(A);
+    EXPECT_FALSE(gw->has_session(A));
+    EXPECT_EQ(gw->tracked_sessions(), 2u);        // A kept until its cancels come back
+    pump();
+    EXPECT_TRUE(take().empty());                  // nothing is sent to a gone session
+    EXPECT_EQ(risk->open_orders(A), 0u);
+    EXPECT_EQ(risk->open_notional(A), 0u);
+    EXPECT_EQ(gw->tracked_sessions(), 1u);        // then forgotten
+}
+
+TEST_F(Lifecycle, GoneSessionOrdersStillReleaseRiskWhenTheyFill) {
+    make_gateway(/*cancel_on_disconnect=*/false);
+    rest(A, 1, 0, px(150), 10);
+    gw->close_session(A);
+    EXPECT_EQ(risk->open_orders(A), 1u);
+    sell(B, 1, px(150), 10);
+    pump();
+    EXPECT_EQ(risk->open_orders(A), 0u);
+    EXPECT_EQ(gw->tracked_sessions(), 1u);
+}
+
+TEST_F(Lifecycle, CollarFollowsTheLastTrade) {
+    buy(A, 1, px(170), 1);                        // collar 135..165 around ref 150
+    expect_rejected(RejectReason::PRICE_COLLAR);
+    rest(A, 2, 0, px(160), 5);
+    sell(B, 1, px(160), 5);                       // trade at 160: collar 144..176
+    pump();
+    take();
+    EXPECT_EQ(risk->reference_price(0), px(160));
+    rest(A, 3, 0, px(170), 1);
+}
+
+TEST_F(Lifecycle, EngineRejectsWhenItsPoolIsFull) {
+    // Each engine has 1024 slots; fill AAPL with resting orders from many clients.
+    risk_cfg.max_orders_per_second = 1000000;
+    make_gateway();
+    for (uint64_t i = 1; i <= 1024; ++i) {
+        buy(A, i, px(150), 1);
+        if (i % 256 == 0) pump();
+    }
+    pump();
+    take();
+    buy(A, 2000, px(150), 1);
+    pump();
+    auto r = er(take().at(0));
+    EXPECT_EQ(type_of(r), ExecType::REJECTED);
+    EXPECT_EQ(static_cast<RejectReason>(r.reject_reason), RejectReason::SYSTEM_BUSY);
+    EXPECT_EQ(risk->open_orders(A), 1024u);       // the rejected order released its reservation
+    EXPECT_EQ(aapl.pool_available(), 0u);
 }

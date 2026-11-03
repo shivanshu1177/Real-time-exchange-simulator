@@ -14,6 +14,7 @@ struct SymbolConfig {
     uint64_t lot_size;         // quantity must be a multiple of this
     double price_collar_pct;
     StpMode stp_mode{StpMode::CANCEL_TAKER};
+    double ref_price{0.0};     // collar reference until the first trade; 0 = no collar until then
 };
 
 struct ExchangeConfig {
@@ -28,8 +29,9 @@ struct ExchangeConfig {
 struct RiskConfig {
     uint64_t max_order_size;
     double max_notional_per_client;
-    uint32_t max_orders_per_second;
+    uint32_t max_orders_per_second;      // per session (token bucket, burst = one second's worth)
     bool price_collar_enabled;
+    uint32_t max_open_orders_per_client{10000};
 };
 
 struct PerformanceConfig {

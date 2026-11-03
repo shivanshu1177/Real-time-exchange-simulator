@@ -14,17 +14,21 @@
 
 namespace rtes {
 
-// Gateway -> engine. Fixed size, passed by value through the engine's SPSC queue.
+// Gateway -> engine. Fixed size, passed by value through the engine's SPSC
+// queue: orders cross threads as values, never as pool pointers, so each
+// engine's pool has a single owner.
 struct OrderRequest {
     enum Type : uint8_t { NEW_ORDER, CANCEL_ORDER, MODIFY_ORDER };
     Type      type{NEW_ORDER};
     bool      via_client_order_id{false}; // gateway resolved the id from its live-order map
+    Side      side{Side::BUY};            // NEW
+    OrderType order_type{OrderType::LIMIT}; // NEW
     SessionId session_id{0};              // requesting session (owner check)
-    Order*    order{nullptr};             // NEW_ORDER: fully populated, owned by the engine from here
-    OrderID   order_id{0};                // CANCEL/MODIFY: exchange order id
-    uint64_t  client_order_id{0};         // CANCEL/MODIFY: echoed in the response
-    Price     new_price{0};               // MODIFY
-    Quantity  new_quantity{0};            // MODIFY: new total quantity
+    OrderID   order_id{0};                // exchange order id
+    uint64_t  client_order_id{0};         // echoed in the response
+    ClientID  client_id{0};               // NEW: identity from logon
+    Price     price{0};                   // NEW (0 for market), or MODIFY: new price
+    Quantity  quantity{0};                // NEW, or MODIFY: new total quantity
 };
 
 // Engine -> gateway. One per execution report or cancel reject.
@@ -92,8 +96,9 @@ class MatchingEngine : private BookListener {
 public:
     // symbol_index is this engine's position in the exchange's symbol table;
     // it is encoded in the high bits of every order id the gateway assigns.
-    // max_orders bounds the resting orders of this symbol.
-    MatchingEngine(const std::string& symbol, uint32_t symbol_index, OrderPool& pool,
+    // max_orders sizes this engine's own order pool and book: the most orders
+    // the symbol can hold at once.
+    MatchingEngine(const std::string& symbol, uint32_t symbol_index,
                    size_t queue_capacity = 65536, size_t max_orders = 65536,
                    StpMode stp = StpMode::CANCEL_TAKER);
     ~MatchingEngine() override;
@@ -122,11 +127,15 @@ public:
     uint64_t trades_executed() const { return trades_executed_.load(); }
     uint64_t events_dropped() const { return events_dropped_.load(); }
 
+    // Engine thread only (or after stop()): free order slots, for tests.
+    size_t pool_available() const { return pool_.available(); }
+    size_t pool_capacity() const { return pool_.capacity(); }
+
 private:
     std::string symbol_;
     char        symbol8_[8]{};   // NUL-padded wire form
     uint32_t    symbol_index_;
-    OrderPool&  pool_;   // shared with the book; the engine releases orders it rejects
+    OrderPool   pool_;   // owned; only this engine's thread acquires and releases
     std::unique_ptr<OrderBook> book_;
 
     // Threading
@@ -148,7 +157,7 @@ private:
     // Worker thread main loop
     void run();
 
-    void process_new_order(Order* order);
+    void process_new_order(const OrderRequest& req);
     void process_cancel(const OrderRequest& req);
     void process_modify(const OrderRequest& req);
 
