@@ -2,7 +2,12 @@
 
 ## Results
 Results live in [`bench/results/`](../bench/results/). Each file records the machine, OS, compiler, build flags
-and git commit that produced it. Run `./scripts/bench.sh` to produce your own.
+and git commit that produced it. Run `./scripts/bench.sh` to produce your own, and
+`python3 scripts/plot_bench.py` to redraw the charts in `docs/img/` (shown in the README) from the latest runs.
+
+First published results: Apple M2 (Mac14,2), macOS 26.3, Apple Clang 21, 3 runs at commit `e8e65d6`. Typical
+cost per operation: add 39.7 ns, cancel 39.8 ns, match (one fill) 18.7 ns, modify 48.5 ns. p99.99 is at most
+209 ns.
 
 What is measured today: **order book operations only** (`bench_book`). It is single-threaded and in process:
 add a passive order, cancel, an aggressive order that makes exactly one fill, and a modify that keeps priority.

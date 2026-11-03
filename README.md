@@ -1,172 +1,183 @@
-# RTES: a small exchange, built to be correct first
+# RTES: a small stock exchange in C++, built to be correct first
 
 [![CI](https://github.com/shivanshu1177/Real-time-exchange-simulator/actions/workflows/ci.yml/badge.svg)](https://github.com/shivanshu1177/Real-time-exchange-simulator/actions/workflows/ci.yml)
 
-RTES is an exchange simulator written in C++20. Clients connect over TCP, log on, and send orders, cancels and
-modifies. A matching engine per symbol fills orders in price-time priority. Every fill comes back to both sides as
-an execution report, and market data goes out over UDP multicast.
+RTES is a working exchange simulator written in C++20. Traders connect over TCP, send orders, and get
+confirmations and fills back; prices go out to everyone over UDP. I built it to learn how a real trading venue
+works, and to show the engineering trading firms look for: correct order handling, simple and safe threading,
+and claims backed by tests and measurements.
 
-I built it to learn how a real trading venue behaves on the wire, and to practise the kind of engineering trading
-firms care about: correct order handling, simple threading, and tests that prove things rather than assert them.
+## At a glance
 
-## Why this project looks the way it does
+| What | Result |
+|---|---|
+| **Order book speed** | about **40 ns** to add or cancel an order, **19 ns** to match one, on one core of an Apple M2 |
+| **Worst case (p99.99)** | at most **209 ns** for every operation, 1 million samples each |
+| **Correctness** | **10 million** random orders, cancels and modifies checked against a reference order book: **0 differences** |
+| **Tests** | **85** automated tests, on Linux (GCC, Clang) and macOS, including memory and thread-safety checkers |
 
-The first version of this repo looked impressive and was wrong. It acknowledged orders before checking risk, then
-dropped them silently. Cancel did nothing, and clients never heard about their fills. A message split across two
-TCP reads broke the connection, and the README quoted latency numbers that no tool in the repo produced.
+*In plain words:* the core can process an order in a few tens of nanoseconds, it gives the same answers as a
+deliberately simple reference implementation across millions of random cases, and every claim on this page
+links to the code or data that backs it.
 
-So I rebuilt it in small, reviewable steps. Each fix landed with a test that would fail without it. The docs now
-say only what the code does, and the bugs that are still open are listed in
-[KNOWN_ISSUES](docs/KNOWN_ISSUES.md) instead of being hidden.
+## Performance
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/bench-typical-dark.svg">
+  <img alt="Typical cost per order book operation: add 39.7 ns, cancel 39.8 ns, match 18.7 ns, modify 48.5 ns" src="docs/img/bench-typical-light.svg">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/bench-tail-dark.svg">
+  <img alt="Latency percentiles: p99.99 is 167 ns for add, match and modify, and 209 ns for cancel" src="docs/img/bench-tail-light.svg">
+</picture>
+
+| Operation | Typical | p50 | p99 | p99.99 |
+|---|---|---|---|---|
+| Add an order to the book | 39.7 ns | 41 ns | 84 ns | 167 ns |
+| Cancel an order | 39.8 ns | 42 ns | 125 ns | 209 ns |
+| Match (aggressive order, one fill) | 18.7 ns | < 42 ns | 42 ns | 167 ns |
+| Modify (reduce quantity) | 48.5 ns | 41 ns | 42 ns | 167 ns |
+
+**What these numbers are:**
+- **Machine and setup:** an Apple M2 MacBook Air on AC power, with Apple Clang 21 and a portable `-O3` build.
+- **Load:** 1,000,000 operations of each type, on a book holding 10,000 resting orders.
+- **Repeatability:** 3 runs that agree within 2%.
+- **"Typical"** is total time divided by operations.
+- **Percentiles** time each operation on its own. The M2 clock ticks every ~42 ns, so they move in ~42 ns steps.
+- **Raw data:** [`bench/results/`](bench/results/), which records the machine, compiler and git commit. The charts
+  are drawn from it by [`scripts/plot_bench.py`](scripts/plot_bench.py).
+
+**What they are not:** the order book alone, on one thread. They exclude the network, the gateway, risk checks
+and the queues between threads. Full wire-to-wire latency will be measured with an open-loop load generator (so
+slow responses can't hide), and published only then.
 
 ## What it does
 
-- **Order entry over TCP** (port 8888, fixed-size binary messages, [protocol reference](docs/API.md)):
-  - logon that binds the client's identity to the connection;
+- **Order entry over TCP:**
+  - log on;
   - new, cancel and modify orders;
-  - execution reports for every state change (new, partial fill, fill, cancelled, replaced, rejected);
-  - a specific reason on every reject.
-- **Pre-trade risk**, decided before the client hears anything:
-  - tick, lot and size checks;
-  - a price collar that follows the last trade;
-  - per-client limits on open notional and open orders, released again by fills and cancels;
-  - a per-connection rate limit.
-- **Matching**, one thread per symbol:
-  - price-time priority, with limit orders and immediate-or-cancel market orders;
-  - self-trade prevention (configurable per symbol);
-  - modify keeps the order's place in the queue only when it reduces quantity at the same price.
-- **Robust connections:**
-  - messages split across any number of TCP reads are reassembled;
-  - a malformed message closes the session with an explicit reason;
-  - a client's resting orders are cancelled when it disconnects.
-- **Market data:** best bid and offer (with quantities) and trades over UDP multicast (239.0.0.1:9999).
+  - a confirmation or a reject with a specific reason for every request;
+  - a fill report to both the buyer and the seller.
+- **Risk checks before anything is accepted:**
+  - price and size limits;
+  - a price band that follows the last trade;
+  - per-client exposure limits;
+  - rate limits.
+- **Matching:**
+  - best price first, then first come, first served;
+  - a client can't trade with itself;
+  - market orders that don't fill right away are cancelled.
+- **Market data:** best bid/offer and trades over UDP multicast.
 
 ## How an order flows
 
 ```
-             TCP                         by value (SPSC queue)
-  client ───────────► gateway thread ─────────────────────────► matching engine (one per symbol)
-    ▲                 · checks the frame                        · fills in price-time order
-    │                 · validates + pre-trade risk              · owns its book and its memory
-    │                 · assigns the exchange order id                    │
-    │                                                                    │ fills, cancels
-    └──── execution reports ◄──── gateway thread ◄──── events (SPSC queue)
-                                                                         │
-                                                  trades, BBO ─► UDP publisher ─► multicast
+             TCP                         by value (queue)
+  client ───────────► gateway thread ─────────────────────► matching engine (one per symbol)
+    ▲                 · checks the message                  · fills in price-time order
+    │                 · validates + risk checks             · owns its book and memory
+    │                                                                │ fills, cancels
+    └──── confirmations and fills ◄──── gateway thread ◄─────────────┘
+                                                                     └─► trades, prices ─► UDP multicast
 ```
 
-1. The gateway thread reads bytes into the connection's buffer and checks each complete message: known type,
-   exact length, valid checksum.
-2. It validates the order and runs the risk checks. A rejected order gets one `REJECTED` report and never reaches
-   the engine.
-3. An accepted order is copied into the engine's queue. No pointers cross threads.
-4. The engine reports `NEW` first, then matches. Each fill produces a report for both the buyer and the seller.
-5. The gateway turns those events into messages for the right client, and updates the client's risk exposure.
+Threads don't share order or book data: each one owns its own, and they hand messages to each other
+through queues. ThreadSanitizer finds no data races, either in the tests or in a live run with real clients.
+Details: [ARCHITECTURE](docs/ARCHITECTURE.md), message formats: [API](docs/API.md).
 
-More detail in [ARCHITECTURE](docs/ARCHITECTURE.md).
+## How I know it's correct
 
-## How I know it works
+- **Reference check:** the real order book and a deliberately simple one get the same random activity: 100 runs
+  × 100,000 operations. After every single operation, all fills, cancels and price levels must match. They do.
+  When I planted bugs on purpose, this test caught each one within a few hundred operations.
+  ([test](tests/test_book_differential.cpp), [reference book](tests/reference_book.hpp))
+- **Order lifecycle tests:**
+  - every reject reason;
+  - a cancel racing a fill;
+  - a cancel from the wrong client;
+  - modify rules;
+  - risk limits being released.
 
-- **85 automated tests** (87 in debug builds), run in CI on GCC 14 and Clang 18 (debug and release) and on
-  macOS with Apple Clang.
-- **A differential test for the order book.** The real book and a deliberately naive reference book
-  ([`tests/reference_book.hpp`](tests/reference_book.hpp)) get the same random orders, cancels and modifies:
-  100 seeds × 100,000 operations. After every operation, every fill, cancel and price level must match. They do,
-  with zero differences. When I planted bugs on purpose (a broken priority rule, broken self-trade prevention),
-  this test caught each one within a few hundred operations. See
-  [`tests/test_book_differential.cpp`](tests/test_book_differential.cpp).
-- **Order lifecycle tests** that drive the gateway and the engines in-process
-  ([`tests/test_order_lifecycle.cpp`](tests/test_order_lifecycle.cpp)): every reject reason, a cancel racing a
-  fill, a cancel from the wrong client, modify priority rules, risk exposure being released.
-- **Real TCP tests** ([`tests/test_framing_sessions.cpp`](tests/test_framing_sessions.cpp)): a message split at
-  every possible byte, bad checksums, wrong lengths, unknown types, a second logon, cancel-on-disconnect.
-- **Sanitizers in CI:** AddressSanitizer with UndefinedBehaviorSanitizer, and ThreadSanitizer. ThreadSanitizer
-  also ran clean against the live exchange with real clients connected.
+  ([tests](tests/test_order_lifecycle.cpp))
+- **Network tests over real TCP:**
+  - a message split at every possible byte;
+  - corrupt or oversized messages;
+  - disconnects.
 
-## Design decisions worth asking me about
+  ([tests](tests/test_framing_sessions.cpp))
+- **Checkers in CI:** AddressSanitizer, UndefinedBehaviorSanitizer and ThreadSanitizer.
 
-- **Risk runs on the gateway thread, not its own thread.** The first reply to a client then already carries the
-  risk decision, and all risk state has exactly one owner. The original design acknowledged first and checked
-  later, which is how orders got silently dropped.
-- **Each engine owns its memory; orders cross threads by value.** The old shared lock-free pool had an ABA race
-  that only stayed hidden because one thread happened to allocate. Removing the need for cross-thread allocation
-  was simpler and safer than writing a cleverer lock-free stack. See [design/memory.md](docs/design/memory.md).
-- **Orders at a price level are an intrusive linked list,** so a cancel from the middle of the queue is O(1), and
-  nothing is allocated per order.
-- **Numbers only with their context.**
-  - What I publish today: order-book latency percentiles from `bench_book`
-    ([`bench/results/`](bench/results/)), measured on my own machine.
-  - Each results file records the CPU, OS, compiler, flags and commit, and states that it is in-process and
-    single-threaded.
-  - Wire-to-wire latency needs an open-loop load generator to avoid coordinated omission. I'll measure it
-    that way before quoting it. See [PERFORMANCE](docs/PERFORMANCE.md).
+## Design choices worth asking me about
+
+- **Risk is checked on the gateway thread, before the first reply,** so a client never hears "accepted" for an
+  order that is then dropped. The original version did exactly that.
+- **Each matching engine owns its memory, and orders move between threads as copies.** This removed a subtle
+  race in a shared lock-free pool, instead of trying to patch it. ([why](docs/design/memory.md))
+- **Orders at each price sit in a linked list,** so cancelling one from the middle is a constant-time unlink.
+- **No number without its context.** Every benchmark result records the hardware and commit, and says what it
+  doesn't cover.
 
 ## Try it
 
-You need CMake 3.20+, Ninja and a C++20 compiler:
-- **Linux or WSL2:** GCC 14 or Clang 18.
-- **macOS:** the Xcode command-line tools plus `brew install cmake ninja`.
-
-CI builds and tests all three: GCC 14 and Clang 18 on Ubuntu, and Apple Clang on macOS.
+You need CMake, Ninja and a C++20 compiler:
+- **Linux:** GCC 14 or Clang 18.
+- **macOS:** `xcode-select --install` and `brew install cmake ninja`.
 
 ```bash
 cmake --preset release && cmake --build --preset release -j && ctest --preset release
 ```
 
-Start the exchange:
-
 ```bash
 ./build/release/trading_exchange configs/config.json
 ```
 
-In a second terminal, log on as client 1, rest a buy order and keep listening:
+In two more terminals, one buyer and one seller (different client ids, otherwise self-trade prevention stops the
+trade):
 
 ```bash
 ./build/release/tcp_client --client-id 1 --order "BUY,AAPL,10,150.00,LIMIT" --listen-ms 5000
 ```
 
-In a third, log on as client 2 and sell into it:
-
 ```bash
 ./build/release/tcp_client --client-id 2 --order "SELL,AAPL,4,150.00,LIMIT"
 ```
 
-The seller sees `NEW` then `FILL`. The buyer sees `NEW` then `PARTIAL_FILL` with 6 left and 4 filled.
-If both use the same client id, self-trade prevention cancels the incoming sell instead (`CANCELED`, reason 19),
-which is the point of it.
-The [RUNBOOK](docs/RUNBOOK.md) shows the market-data receiver and the strategy clients.
-
-Other build presets: `debug`, `asan` (address and undefined-behaviour sanitizers), `tsan` (thread sanitizer).
-
-To measure the order book on your machine (results go to `bench/results/` with the hardware recorded):
+The seller gets `NEW` then `FILL`, and the buyer `NEW` then `PARTIAL_FILL` (4 filled, 6 left). To measure the
+order book on your own machine:
 
 ```bash
-./scripts/bench.sh
+./scripts/bench.sh && python3 scripts/plot_bench.py
 ```
 
-## What's not done yet
+## Not done yet
 
-- **No authentication.** Logon binds an identity but does not check the API key.
-- **No order book depth on the market-data feed,** and **no metrics endpoint** yet.
-- **No wire-to-wire latency or throughput figures yet,** only in-process order book percentiles (see above).
+- **Measurements:** wire-to-wire latency and throughput aren't measured yet (see above).
+- **Market data:** no order book depth yet, only the best price and trades.
+- **Operations:** no metrics endpoint yet.
+- **Security:** logon doesn't check passwords or keys.
 
-The order I'm tackling these in is in the [ROADMAP](docs/ROADMAP.md): an end-to-end test in CI, depth, a
-deterministic journal with replay, fuzzing, crypto-perpetual order types, a market-making research venue, and
-then honest benchmarks.
+Planned, in order, in the [roadmap](docs/ROADMAP.md):
+1. an end-to-end test in CI;
+2. depth;
+3. record and replay;
+4. fuzz testing;
+5. crypto-perpetual order types;
+6. a market-making research venue;
+7. full benchmarks.
+
+Open issues are listed in [KNOWN_ISSUES](docs/KNOWN_ISSUES.md).
 
 ## Repository layout
 
 ```
 include/rtes/   headers: protocol, gateway, matching engine, order book, risk, memory pool, queues
 src/            implementation
-tests/          unit, lifecycle, TCP and differential tests
+tests/          unit, lifecycle, network and reference-book tests
 tools/          tcp_client, client_simulator, udp_receiver, bench_book
-scripts/        bench.sh: run the benchmark and record the machine it ran on
+scripts/        bench.sh (run and record a benchmark), plot_bench.py (draw the charts)
 bench/results/  benchmark results, one file per run
-configs/        exchange configuration (symbols, risk limits)
-docs/           protocol, architecture, runbook, roadmap, known issues
+docs/           architecture, protocol, runbook, roadmap, known issues
 ```
 
-## License
-
-MIT, see [LICENSE](LICENSE).
+MIT licensed, see [LICENSE](LICENSE).

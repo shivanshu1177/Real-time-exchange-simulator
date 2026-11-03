@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="344" viewBox="0 0 760 344" role="img" aria-label="Order book operation latency percentiles in nanoseconds">
+<rect width="760" height="344" rx="8" fill="#fcfcfb"/>
+<text x="20.0" y="30.0" fill="#0b0b0b" font-size="16" font-weight="600" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Tail latency per operation (worst of the runs, lower is better)</text>
+<text x="20.0" y="52.0" fill="#52514e" font-size="12.5" font-weight="normal" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Apple M2 (Mac14,2), one core, in process. Each operation timed on its own, 1,000,000 per type per run.</text>
+<rect x="20" y="64" width="12" height="12" rx="2" fill="#86b6ef"/>
+<text x="38.0" y="74.5" fill="#52514e" font-size="12.5" font-weight="normal" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">p50</text>
+<rect x="106" y="64" width="12" height="12" rx="2" fill="#2a78d6"/>
+<text x="124.0" y="74.5" fill="#52514e" font-size="12.5" font-weight="normal" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">p99</text>
+<rect x="192" y="64" width="12" height="12" rx="2" fill="#104281"/>
+<text x="210.0" y="74.5" fill="#52514e" font-size="12.5" font-weight="normal" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">p99.99</text>
+<line x1="56" y1="268.0" x2="736" y2="268.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="48.0" y="272.0" fill="#898781" font-size="11.5" font-weight="normal" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">0</text>
+<line x1="56" y1="236.0" x2="736" y2="236.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="48.0" y="240.0" fill="#898781" font-size="11.5" font-weight="normal" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">50</text>
+<line x1="56" y1="204.0" x2="736" y2="204.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="48.0" y="208.0" fill="#898781" font-size="11.5" font-weight="normal" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">100</text>
+<line x1="56" y1="172.0" x2="736" y2="172.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="48.0" y="176.0" fill="#898781" font-size="11.5" font-weight="normal" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">150</text>
+<line x1="56" y1="140.0" x2="736" y2="140.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="48.0" y="144.0" fill="#898781" font-size="11.5" font-weight="normal" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">200</text>
+<line x1="56" y1="108.0" x2="736" y2="108.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="48.0" y="112.0" fill="#898781" font-size="11.5" font-weight="normal" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">250</text>
+<text x="48.0" y="96.0" fill="#898781" font-size="11.5" font-weight="normal" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">ns</text>
+<line x1="56" y1="268" x2="736" y2="268" stroke="#c3c2b7" stroke-width="1"/>
+<path d="M100.0,268.0 V245.8 Q100.0,241.8 104.0,241.8 H122.0 Q126.0,241.8 126.0,245.8 V268.0 Z" fill="#86b6ef"><title>Add p50: 41 ns</title></path>
+<text x="113.0" y="235.8" fill="#0b0b0b" font-size="11.5" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">41</text>
+<path d="M128.0,268.0 V218.2 Q128.0,214.2 132.0,214.2 H150.0 Q154.0,214.2 154.0,218.2 V268.0 Z" fill="#2a78d6"><title>Add p99: 84 ns</title></path>
+<text x="141.0" y="208.2" fill="#0b0b0b" font-size="11.5" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">84</text>
+<path d="M156.0,268.0 V165.1 Q156.0,161.1 160.0,161.1 H178.0 Q182.0,161.1 182.0,165.1 V268.0 Z" fill="#104281"><title>Add p99.99: 167 ns</title></path>
+<text x="169.0" y="155.1" fill="#0b0b0b" font-size="11.5" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">167</text>
+<text x="141.0" y="288.0" fill="#52514e" font-size="13" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Add</text>
+<path d="M270.0,268.0 V245.1 Q270.0,241.1 274.0,241.1 H292.0 Q296.0,241.1 296.0,245.1 V268.0 Z" fill="#86b6ef"><title>Cancel p50: 42 ns</title></path>
+<text x="283.0" y="235.1" fill="#0b0b0b" font-size="11.5" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">42</text>
+<path d="M298.0,268.0 V192.0 Q298.0,188.0 302.0,188.0 H320.0 Q324.0,188.0 324.0,192.0 V268.0 Z" fill="#2a78d6"><title>Cancel p99: 125 ns</title></path>
+<text x="311.0" y="182.0" fill="#0b0b0b" font-size="11.5" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">125</text>
+<path d="M326.0,268.0 V138.2 Q326.0,134.2 330.0,134.2 H348.0 Q352.0,134.2 352.0,138.2 V268.0 Z" fill="#104281"><title>Cancel p99.99: 209 ns</title></path>
+<text x="339.0" y="128.2" fill="#0b0b0b" font-size="11.5" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">209</text>
+<text x="311.0" y="288.0" fill="#52514e" font-size="13" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Cancel</text>
+<text x="453.0" y="262.0" fill="#0b0b0b" font-size="11.5" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">&lt;42</text>
+<path d="M468.0,268.0 V245.1 Q468.0,241.1 472.0,241.1 H490.0 Q494.0,241.1 494.0,245.1 V268.0 Z" fill="#2a78d6"><title>Match (1 fill) p99: 42 ns</title></path>
+<text x="481.0" y="235.1" fill="#0b0b0b" font-size="11.5" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">42</text>
+<path d="M496.0,268.0 V165.1 Q496.0,161.1 500.0,161.1 H518.0 Q522.0,161.1 522.0,165.1 V268.0 Z" fill="#104281"><title>Match (1 fill) p99.99: 167 ns</title></path>
+<text x="509.0" y="155.1" fill="#0b0b0b" font-size="11.5" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">167</text>
+<text x="481.0" y="288.0" fill="#52514e" font-size="13" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Match (1 fill)</text>
+<path d="M610.0,268.0 V245.8 Q610.0,241.8 614.0,241.8 H632.0 Q636.0,241.8 636.0,245.8 V268.0 Z" fill="#86b6ef"><title>Modify p50: 41 ns</title></path>
+<text x="623.0" y="235.8" fill="#0b0b0b" font-size="11.5" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">41</text>
+<path d="M638.0,268.0 V245.1 Q638.0,241.1 642.0,241.1 H660.0 Q664.0,241.1 664.0,245.1 V268.0 Z" fill="#2a78d6"><title>Modify p99: 42 ns</title></path>
+<text x="651.0" y="235.1" fill="#0b0b0b" font-size="11.5" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">42</text>
+<path d="M666.0,268.0 V165.1 Q666.0,161.1 670.0,161.1 H688.0 Q692.0,161.1 692.0,165.1 V268.0 Z" fill="#104281"><title>Modify p99.99: 167 ns</title></path>
+<text x="679.0" y="155.1" fill="#0b0b0b" font-size="11.5" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">167</text>
+<text x="651.0" y="288.0" fill="#52514e" font-size="13" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Modify</text>
+<text x="20.0" y="310.0" fill="#898781" font-size="11.5" font-weight="normal" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">The Apple M2 clock ticks every ~42 ns, so values move in ~42 ns steps; “&lt;42” means faster than one tick.</text>
+<text x="20.0" y="328.0" fill="#898781" font-size="11.5" font-weight="normal" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Not shown: the single worst sample (up to 144 µs) is the OS interrupting the thread; macOS cannot pin threads.</text>
+</svg>

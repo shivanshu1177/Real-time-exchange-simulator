@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="292" viewBox="0 0 760 292" role="img" aria-label="Typical cost per order book operation in nanoseconds">
+<rect width="760" height="292" rx="8" fill="#fcfcfb"/>
+<text x="20.0" y="30.0" fill="#0b0b0b" font-size="16" font-weight="600" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Typical cost per order book operation (lower is better)</text>
+<text x="20.0" y="52.0" fill="#52514e" font-size="12.5" font-weight="normal" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Apple M2 (Mac14,2), one core, in process. Mean of 3 runs; range across runs in brackets.</text>
+<line x1="150.0" y1="68" x2="150.0" y2="234" stroke="#e1e0d9" stroke-width="1"/>
+<text x="150.0" y="252.0" fill="#898781" font-size="11.5" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">0</text>
+<line x1="231.7" y1="68" x2="231.7" y2="234" stroke="#e1e0d9" stroke-width="1"/>
+<text x="231.7" y="252.0" fill="#898781" font-size="11.5" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">10</text>
+<line x1="313.3" y1="68" x2="313.3" y2="234" stroke="#e1e0d9" stroke-width="1"/>
+<text x="313.3" y="252.0" fill="#898781" font-size="11.5" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">20</text>
+<line x1="395.0" y1="68" x2="395.0" y2="234" stroke="#e1e0d9" stroke-width="1"/>
+<text x="395.0" y="252.0" fill="#898781" font-size="11.5" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">30</text>
+<line x1="476.7" y1="68" x2="476.7" y2="234" stroke="#e1e0d9" stroke-width="1"/>
+<text x="476.7" y="252.0" fill="#898781" font-size="11.5" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">40</text>
+<line x1="558.3" y1="68" x2="558.3" y2="234" stroke="#e1e0d9" stroke-width="1"/>
+<text x="558.3" y="252.0" fill="#898781" font-size="11.5" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">50</text>
+<line x1="640.0" y1="68" x2="640.0" y2="234" stroke="#e1e0d9" stroke-width="1"/>
+<text x="640.0" y="252.0" fill="#898781" font-size="11.5" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">60</text>
+<text x="395.0" y="270.0" fill="#898781" font-size="11.5" font-weight="normal" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">nanoseconds per operation</text>
+<line x1="150" y1="68" x2="150" y2="234" stroke="#c3c2b7" stroke-width="1"/>
+<text x="138.0" y="94.5" fill="#52514e" font-size="13" font-weight="normal" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Add</text>
+<path d="M150.0,79.0 H470.2 Q474.2,79.0 474.2,83.0 V97.0 Q474.2,101.0 470.2,101.0 H150.0 Z" fill="#2a78d6"><title>Add: 39.7 ns (runs: 39.5 to 40.0)</title></path>
+<text x="482.2" y="94.5" fill="#0b0b0b" font-size="13" font-weight="600" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">39.7 ns</text>
+<text x="538.2" y="94.5" fill="#898781" font-size="11.5" font-weight="normal" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">(39.5–40.0)</text>
+<text x="138.0" y="134.5" fill="#52514e" font-size="13" font-weight="normal" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Cancel</text>
+<path d="M150.0,119.0 H471.0 Q475.0,119.0 475.0,123.0 V137.0 Q475.0,141.0 471.0,141.0 H150.0 Z" fill="#2a78d6"><title>Cancel: 39.8 ns (runs: 39.8 to 39.8)</title></path>
+<text x="483.0" y="134.5" fill="#0b0b0b" font-size="13" font-weight="600" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">39.8 ns</text>
+<text x="539.0" y="134.5" fill="#898781" font-size="11.5" font-weight="normal" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">(39.8–39.8)</text>
+<text x="138.0" y="174.5" fill="#52514e" font-size="13" font-weight="normal" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Match (1 fill)</text>
+<path d="M150.0,159.0 H298.4 Q302.4,159.0 302.4,163.0 V177.0 Q302.4,181.0 298.4,181.0 H150.0 Z" fill="#2a78d6"><title>Match (1 fill): 18.7 ns (runs: 18.5 to 18.8)</title></path>
+<text x="310.4" y="174.5" fill="#0b0b0b" font-size="13" font-weight="600" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">18.7 ns</text>
+<text x="366.4" y="174.5" fill="#898781" font-size="11.5" font-weight="normal" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">(18.5–18.8)</text>
+<text x="138.0" y="214.5" fill="#52514e" font-size="13" font-weight="normal" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">Modify</text>
+<path d="M150.0,199.0 H541.8 Q545.8,199.0 545.8,203.0 V217.0 Q545.8,221.0 541.8,221.0 H150.0 Z" fill="#2a78d6"><title>Modify: 48.5 ns (runs: 48.3 to 48.6)</title></path>
+<text x="553.8" y="214.5" fill="#0b0b0b" font-size="13" font-weight="600" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">48.5 ns</text>
+<text x="609.8" y="214.5" fill="#898781" font-size="11.5" font-weight="normal" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">(48.3–48.6)</text>
+</svg>
