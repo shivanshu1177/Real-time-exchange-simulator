@@ -1,85 +1,156 @@
-# Real-Time Trading Exchange Simulator (RTES)
+# RTES: a small exchange, built to be correct first
 
 [![CI](https://github.com/shivanshu1177/Real-time-exchange-simulator/actions/workflows/ci.yml/badge.svg)](https://github.com/shivanshu1177/Real-time-exchange-simulator/actions/workflows/ci.yml)
 
-A C++20 exchange simulator: a TCP binary order gateway, pre-trade risk, one matching-engine thread per symbol
-(price-time priority) and UDP multicast market data.
+RTES is an exchange simulator written in C++20. Clients connect over TCP, log on, and send orders, cancels and
+modifies. A matching engine per symbol fills orders in price-time priority. Every fill comes back to both sides as
+an execution report, and market data goes out over UDP multicast.
 
-## Status
-This is a work in progress. What exists today, with tests:
-- **Builds and tests:** GCC 14 and Clang 18 with warnings as errors, plus ASan/UBSan and TSan builds, all run in CI.
-- **Order entry:** TCP on port 8888, fixed-size binary messages ([API](docs/API.md)).
-  - Logon binds the session's identity; malformed frames get a session reject and are closed.
-  - Frames split across TCP reads are reassembled.
-  - A session's resting orders are cancelled when it disconnects.
-  - New, cancel and modify.
-  - Pre-trade risk is decided before the first reply.
-  - Rejects carry a specific reason.
-  - Execution reports go to both sides of every fill.
-  - Order ids are assigned by the exchange, and ownership is enforced per session.
-- **Risk:** synchronous on the gateway thread.
-  - Tick, lot and size checks.
-  - A price collar that follows the last trade.
-  - Per-client open notional and open-order limits, released by fills and cancels.
-  - A per-session token-bucket rate limit.
-  - Reject logging summarised once per second.
-- **Matching:** one writer thread per symbol, price-time priority. Each engine owns its order pool, so no
-  memory is shared across threads.
-  - Limit orders, and market orders that behave as immediate-or-cancel.
-  - Self-trade prevention, and tick/lot checks.
-  - O(1) cancel.
-  - Checked against a reference book by a differential test (100 seeds × 100,000 random operations).
-- **Market data:** UDP multicast on 239.0.0.1:9999, BBO (with quantities) and trades.
+I built it to learn how a real trading venue behaves on the wire, and to practise the kind of engineering trading
+firms care about: correct order handling, simple threading, and tests that prove things rather than assert them.
 
-Not working yet, and tracked in [KNOWN_ISSUES](docs/KNOWN_ISSUES.md):
-- No authentication (the logon's API key is not checked).
+## Why this project looks the way it does
 
-Planned work is in the [ROADMAP](docs/ROADMAP.md): depth, metrics, determinism, perps, a market-making venue,
-and measured benchmarks. No performance figures are claimed until benchmark results are committed to the repo.
+The first version of this repo looked impressive and was wrong. It acknowledged orders before checking risk, then
+dropped them silently. Cancel did nothing, and clients never heard about their fills. A message split across two
+TCP reads broke the connection, and the README quoted latency numbers that no tool in the repo produced.
 
-## Architecture
-- **TCP gateway** (port 8888): one thread; binary protocol, synchronous pre-trade risk, execution reports
-  back to clients
-- **Matching engine**: one single-writer thread per symbol, price-time priority
-- **Market data**: UDP multicast (239.0.0.1:9999), BBO and trades
+So I rebuilt it in small, reviewable steps. Each fix landed with a test that would fail without it. The docs now
+say only what the code does, and the bugs that are still open are listed in
+[KNOWN_ISSUES](docs/KNOWN_ISSUES.md) instead of being hidden.
 
-See [ARCHITECTURE](docs/ARCHITECTURE.md).
+## What it does
 
-## Quick Start
+- **Order entry over TCP** (port 8888, fixed-size binary messages, [protocol reference](docs/API.md)):
+  - logon that binds the client's identity to the connection;
+  - new, cancel and modify orders;
+  - execution reports for every state change (new, partial fill, fill, cancelled, replaced, rejected);
+  - a specific reason on every reject.
+- **Pre-trade risk**, decided before the client hears anything:
+  - tick, lot and size checks;
+  - a price collar that follows the last trade;
+  - per-client limits on open notional and open orders, released again by fills and cancels;
+  - a per-connection rate limit.
+- **Matching**, one thread per symbol:
+  - price-time priority, with limit orders and immediate-or-cancel market orders;
+  - self-trade prevention (configurable per symbol);
+  - modify keeps the order's place in the queue only when it reduces quantity at the same price.
+- **Robust connections:**
+  - messages split across any number of TCP reads are reassembled;
+  - a malformed message closes the session with an explicit reason;
+  - a client's resting orders are cancelled when it disconnects.
+- **Market data:** best bid and offer (with quantities) and trades over UDP multicast (239.0.0.1:9999).
 
-```bash
-cmake --preset release && cmake --build --preset release -j
-ctest --preset release
+## How an order flows
 
-# Start the exchange (from the repo root)
-./build/release/trading_exchange configs/config.json
-
-# In another terminal: a simple market-making client
-./build/release/client_simulator --strategy market_maker --symbol AAPL --duration 10
+```
+             TCP                         by value (SPSC queue)
+  client ───────────► gateway thread ─────────────────────────► matching engine (one per symbol)
+    ▲                 · checks the frame                        · fills in price-time order
+    │                 · validates + pre-trade risk              · owns its book and its memory
+    │                 · assigns the exchange order id                    │
+    │                                                                    │ fills, cancels
+    └──── execution reports ◄──── gateway thread ◄──── events (SPSC queue)
+                                                                         │
+                                                  trades, BBO ─► UDP publisher ─► multicast
 ```
 
-## Repository Structure
-```
-├── include/           # Public headers
-├── src/              # Implementation
-├── tests/            # Unit & integration tests
-├── tools/            # Load generators, utilities
-├── docs/             # Architecture & performance guides
-├── configs/          # Configuration files
-├── docker/           # Container definitions
-└── .github/workflows/ # CI/CD
-```
+1. The gateway thread reads bytes into the connection's buffer and checks each complete message: known type,
+   exact length, valid checksum.
+2. It validates the order and runs the risk checks. A rejected order gets one `REJECTED` report and never reaches
+   the engine.
+3. An accepted order is copied into the engine's queue. No pointers cross threads.
+4. The engine reports `NEW` first, then matches. Each fill produces a report for both the buyer and the seller.
+5. The gateway turns those events into messages for the right client, and updates the client's risk exposure.
 
-## Requirements
-- C++20 compiler. Verified: GCC 14 and Clang 18 on Ubuntu 24.04
-- CMake 3.20+ and Ninja
-- Linux (recommended for performance)
+More detail in [ARCHITECTURE](docs/ARCHITECTURE.md).
 
-Build presets: `debug`, `release` (portable `-O3`), `asan` (address + undefined behaviour sanitizers), `tsan`.
+## How I know it works
+
+- **80 automated tests** (82 in debug builds), run in CI on GCC 14 and Clang 18, in debug and release.
+- **A differential test for the order book.** The real book and a deliberately naive reference book
+  ([`tests/reference_book.hpp`](tests/reference_book.hpp)) get the same random orders, cancels and modifies:
+  100 seeds × 100,000 operations. After every operation, every fill, cancel and price level must match. They do,
+  with zero differences. When I planted bugs on purpose (a broken priority rule, broken self-trade prevention),
+  this test caught each one within a few hundred operations. See
+  [`tests/test_book_differential.cpp`](tests/test_book_differential.cpp).
+- **Order lifecycle tests** that drive the gateway and the engines in-process
+  ([`tests/test_order_lifecycle.cpp`](tests/test_order_lifecycle.cpp)): every reject reason, a cancel racing a
+  fill, a cancel from the wrong client, modify priority rules, risk exposure being released.
+- **Real TCP tests** ([`tests/test_framing_sessions.cpp`](tests/test_framing_sessions.cpp)): a message split at
+  every possible byte, bad checksums, wrong lengths, unknown types, a second logon, cancel-on-disconnect.
+- **Sanitizers in CI:** AddressSanitizer with UndefinedBehaviorSanitizer, and ThreadSanitizer. ThreadSanitizer
+  also ran clean against the live exchange with real clients connected.
+
+## Design decisions worth asking me about
+
+- **Risk runs on the gateway thread, not its own thread.** The first reply to a client then already carries the
+  risk decision, and all risk state has exactly one owner. The original design acknowledged first and checked
+  later, which is how orders got silently dropped.
+- **Each engine owns its memory; orders cross threads by value.** The old shared lock-free pool had an ABA race
+  that only stayed hidden because one thread happened to allocate. Removing the need for cross-thread allocation
+  was simpler and safer than writing a cleverer lock-free stack. See [design/memory.md](docs/design/memory.md).
+- **Orders at a price level are an intrusive linked list,** so a cancel from the middle of the queue is O(1), and
+  nothing is allocated per order.
+- **No performance numbers yet.** Measuring latency properly means percentiles, an open-loop load generator
+  (to avoid coordinated omission) and known hardware. Until that work is done and the results are committed, I
+  don't publish a number. See [PERFORMANCE](docs/PERFORMANCE.md).
+
+## Try it
+
+You need Linux (or WSL2), GCC 14 or Clang 18, CMake 3.20+ and Ninja.
+
 ```bash
 cmake --preset release && cmake --build --preset release -j && ctest --preset release
 ```
-Options: `-DRTES_NATIVE=ON` adds `-march=native` (binaries then only run on the build CPU); `-DRTES_WERROR=ON` turns warnings into errors.
+
+Start the exchange:
+
+```bash
+./build/release/trading_exchange configs/config.json
+```
+
+In a second terminal, log on as client 1, rest a buy order and keep listening:
+
+```bash
+./build/release/tcp_client --client-id 1 --order "BUY,AAPL,10,150.00,LIMIT" --listen-ms 5000
+```
+
+In a third, log on as client 2 and sell into it:
+
+```bash
+./build/release/tcp_client --client-id 2 --order "SELL,AAPL,4,150.00,LIMIT"
+```
+
+The seller sees `NEW` then `FILL`. The buyer sees `NEW` then `PARTIAL_FILL` with 6 left and 4 filled.
+If both use the same client id, self-trade prevention cancels the incoming sell instead (`CANCELED`, reason 19),
+which is the point of it.
+The [RUNBOOK](docs/RUNBOOK.md) shows the market-data receiver and the strategy clients.
+
+Other build presets: `debug`, `asan` (address and undefined-behaviour sanitizers), `tsan` (thread sanitizer).
+
+## What's not done yet
+
+- **No authentication.** Logon binds an identity but does not check the API key.
+- **No order book depth on the market-data feed,** and **no metrics endpoint** yet.
+- **No published latency or throughput figures** (see above).
+- **macOS is not supported yet:** the gateway uses `MSG_NOSIGNAL`, which macOS does not have.
+
+The order I'm tackling these in is in the [ROADMAP](docs/ROADMAP.md): an end-to-end test in CI, depth, a
+deterministic journal with replay, fuzzing, crypto-perpetual order types, a market-making research venue, and
+then honest benchmarks.
+
+## Repository layout
+
+```
+include/rtes/   headers: protocol, gateway, matching engine, order book, risk, memory pool, queues
+src/            implementation
+tests/          unit, lifecycle, TCP and differential tests
+tools/          tcp_client, client_simulator, udp_receiver, benchmarks
+configs/        exchange configuration (symbols, risk limits)
+docs/           protocol, architecture, runbook, roadmap, known issues
+```
 
 ## License
-MIT License - see LICENSE file
+
+MIT, see [LICENSE](LICENSE).
