@@ -16,7 +16,7 @@ namespace rtes {
 
 // ---- ClientConnection ----------------------------------------------------
 
-ClientConnection::ClientConnection(int fd) : fd_(fd) {}
+ClientConnection::ClientConnection(int fd, SessionId session) : fd_(fd), session_(session) {}
 
 ssize_t ClientConnection::read_data_safe(void* buffer, size_t size) {
     size_t total = 0;
@@ -95,8 +95,9 @@ void ClientConnection::disconnect() {
 
 // ---- TcpGateway ----------------------------------------------------------
 
-TcpGateway::TcpGateway(uint16_t port, RiskManager* risk_manager, OrderPool* order_pool)
-    : port_(port), risk_manager_(risk_manager), order_pool_(order_pool)
+TcpGateway::TcpGateway(uint16_t port, RiskManager& risk, OrderPool& pool,
+                       std::vector<MatchingEngine*> engines)
+    : port_(port), core_(risk, pool, std::move(engines), *this)
 {}
 
 TcpGateway::~TcpGateway() { stop(); }
@@ -146,220 +147,111 @@ void TcpGateway::start() {
         return;
     }
     running_.store(true, std::memory_order_release);
-    acceptor_thread_ = std::thread(&TcpGateway::acceptor_loop, this);
-    worker_thread_   = std::thread(&TcpGateway::worker_loop,   this);
+    worker_thread_ = std::thread(&TcpGateway::worker_loop, this);
 }
 
 void TcpGateway::stop() {
     running_.store(false, std::memory_order_release);
-    if (acceptor_thread_.joinable()) acceptor_thread_.join();
-    if (worker_thread_.joinable())   worker_thread_.join();
-    // Close all client connections
-    std::lock_guard<std::mutex> lock(connections_mutex_);
-    for (auto& [fd, conn] : connections_) conn->disconnect();
+    if (worker_thread_.joinable()) worker_thread_.join();
+    for (auto& [fd, conn] : connections_) {
+        core_.close_session(conn->session());
+        conn->disconnect();
+    }
     connections_.clear();
+    by_session_.clear();
 }
 
-void TcpGateway::acceptor_loop() {
-    while (running_.load(std::memory_order_acquire)) {
-        struct pollfd pfd{};
-        pfd.fd     = listen_fd_.get();
-        pfd.events = POLLIN;
-        int ret = ::poll(&pfd, 1, 100 /*ms*/);
-        if (ret <= 0) continue;
-        if (!(pfd.revents & POLLIN)) continue;
-
-        // Accept all pending connections
-        while (true) {
-            sockaddr_in client_addr{};
-            socklen_t   client_len = sizeof(client_addr);
-            int client_fd = ::accept(listen_fd_.get(),
-                                     reinterpret_cast<sockaddr*>(&client_addr),
-                                     &client_len);
-            if (client_fd < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-                if (errno == EINTR) continue;
-                break;
-            }
-
-            // Set client socket non-blocking
-            int flags = ::fcntl(client_fd, F_GETFL, 0);
-            ::fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
-
-            int opt = 1;
-            ::setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
-
-            {
-                std::lock_guard<std::mutex> lock(connections_mutex_);
-                connections_[client_fd] = std::make_shared<ClientConnection>(client_fd);
-            }
-            connections_accepted_.fetch_add(1, std::memory_order_relaxed);
-            LOG_INFO("TcpGateway: accepted connection fd=" + std::to_string(client_fd) +
-                     " from " + inet_ntoa(client_addr.sin_addr));
+void TcpGateway::accept_pending() {
+    while (true) {
+        sockaddr_in client_addr{};
+        socklen_t   client_len = sizeof(client_addr);
+        int client_fd = ::accept(listen_fd_.get(),
+                                 reinterpret_cast<sockaddr*>(&client_addr),
+                                 &client_len);
+        if (client_fd < 0) {
+            if (errno == EINTR) continue;
+            break;   // EAGAIN: nothing more to accept
         }
+
+        int flags = ::fcntl(client_fd, F_GETFL, 0);
+        ::fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
+        int opt = 1;
+        ::setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+
+        const SessionId session = core_.open_session();
+        auto conn = std::make_unique<ClientConnection>(client_fd, session);
+        by_session_[session] = conn.get();
+        connections_[client_fd] = std::move(conn);
+        connections_accepted_.fetch_add(1, std::memory_order_relaxed);
+        LOG_INFO("TcpGateway: accepted connection fd=" + std::to_string(client_fd) +
+                 " session=" + std::to_string(session) +
+                 " from " + inet_ntoa(client_addr.sin_addr));
     }
 }
 
 void TcpGateway::worker_loop() {
+    // After any input or output, keep polling without sleeping for a short
+    // window: a request just handed to an engine produces events microseconds
+    // later. When idle, poll with a 1 ms timeout instead of spinning.
+    constexpr auto kBusyWindow = std::chrono::microseconds(200);
+    auto last_activity = std::chrono::steady_clock::now() - kBusyWindow;
     while (running_.load(std::memory_order_acquire)) {
-        // Snapshot current fds under lock
-        std::vector<std::pair<int, std::shared_ptr<ClientConnection>>> snapshot;
-        {
-            std::lock_guard<std::mutex> lock(connections_mutex_);
-            snapshot.reserve(connections_.size());
-            for (auto& [fd, conn] : connections_) {
-                snapshot.emplace_back(fd, conn);
-            }
-        }
-
-        if (snapshot.empty()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            continue;
-        }
-
         std::vector<struct pollfd> pfds;
-        pfds.reserve(snapshot.size());
-        for (auto& [fd, conn] : snapshot) {
-            struct pollfd pfd{};
-            pfd.fd     = fd;
-            pfd.events = POLLIN;
-            pfds.push_back(pfd);
-        }
+        pfds.reserve(connections_.size() + 1);
+        pfds.push_back(pollfd{listen_fd_.get(), POLLIN, 0});
+        for (auto& [fd, conn] : connections_) pfds.push_back(pollfd{fd, POLLIN, 0});
 
-        int ret = ::poll(pfds.data(), static_cast<nfds_t>(pfds.size()), 100 /*ms*/);
-        if (ret <= 0) continue;
-
-        for (size_t i = 0; i < pfds.size(); ++i) {
-            auto& pfd = pfds[i];
-            if (pfd.revents & (POLLHUP | POLLERR)) {
-                remove_connection(pfd.fd);
-            } else if (pfd.revents & POLLIN) {
-                handle_client_data(pfd.fd);
+        const bool busy = std::chrono::steady_clock::now() - last_activity < kBusyWindow;
+        int ret = ::poll(pfds.data(), static_cast<nfds_t>(pfds.size()), busy ? 0 : 1 /*ms*/);
+        if (ret > 0) {
+            if (pfds[0].revents & POLLIN) accept_pending();
+            for (size_t i = 1; i < pfds.size(); ++i) {
+                const auto& pfd = pfds[i];
+                if (pfd.revents & POLLIN) {
+                    handle_client_data(pfd.fd);
+                } else if (pfd.revents & (POLLHUP | POLLERR)) {
+                    remove_connection(pfd.fd);
+                }
             }
+        }
+        if (core_.drain_events() > 0 || ret > 0) {
+            last_activity = std::chrono::steady_clock::now();
         }
     }
 }
 
 void TcpGateway::handle_client_data(int client_fd) {
-    std::shared_ptr<ClientConnection> conn;
-    {
-        std::lock_guard<std::mutex> lock(connections_mutex_);
-        auto it = connections_.find(client_fd);
-        if (it == connections_.end()) return;
-        conn = it->second;
-    }
+    auto it = connections_.find(client_fd);
+    if (it == connections_.end()) return;
+    ClientConnection* conn = it->second.get();
 
     FixedSizeBuffer<8192> buf;
     if (!conn->read_message_safe(buf)) {
-        if (!conn->is_connected()) {
-            remove_connection(client_fd);
-        }
+        if (!conn->is_connected()) remove_connection(client_fd);
         return;
     }
-
     messages_received_.fetch_add(1, std::memory_order_relaxed);
-    process_message_safe(conn.get(), buf);
+    core_.on_message(conn->session(), buf.begin(), buf.size);
 }
 
 void TcpGateway::remove_connection(int client_fd) {
-    std::lock_guard<std::mutex> lock(connections_mutex_);
     auto it = connections_.find(client_fd);
-    if (it != connections_.end()) {
-        it->second->disconnect();
-        connections_.erase(it);
-        LOG_INFO("TcpGateway: connection closed fd=" + std::to_string(client_fd));
+    if (it == connections_.end()) return;
+    const SessionId session = it->second->session();
+    core_.close_session(session);
+    by_session_.erase(session);
+    it->second->disconnect();
+    connections_.erase(it);
+    LOG_INFO("TcpGateway: connection closed fd=" + std::to_string(client_fd) +
+             " session=" + std::to_string(session));
+}
+
+void TcpGateway::send(SessionId session, const void* data, size_t len) {
+    auto it = by_session_.find(session);
+    if (it == by_session_.end()) return;
+    if (it->second->write_message_safe(data, len)) {
+        messages_sent_.fetch_add(1, std::memory_order_relaxed);
     }
-}
-
-void TcpGateway::process_message_safe(ClientConnection* conn,
-                                       const FixedSizeBuffer<8192>& buffer) {
-    if (buffer.size < sizeof(MessageHeader)) return;
-    const auto* hdr = reinterpret_cast<const MessageHeader*>(buffer.begin());
-    auto type = static_cast<MessageType>(hdr->type);
-
-    if (type == MessageType::NEW_ORDER && buffer.size >= sizeof(NewOrderMessage)) {
-        const auto* msg = reinterpret_cast<const NewOrderMessage*>(buffer.begin());
-        handle_new_order(conn, *msg);
-    } else if (type == MessageType::CANCEL_ORDER && buffer.size >= sizeof(CancelOrderMessage)) {
-        const auto* msg = reinterpret_cast<const CancelOrderMessage*>(buffer.begin());
-        handle_cancel_order(conn, *msg);
-    }
-}
-
-void TcpGateway::handle_new_order(ClientConnection* conn, const NewOrderMessage& msg) {
-    AuthContext ctx;
-    ctx.client_id = msg.client_id;
-
-    if (!risk_manager_->validate_order(msg, ctx)) {
-        send_order_ack(conn, msg.client_order_id, 1, "INVALID_SYMBOL");
-        return;
-    }
-
-    Order* order = order_pool_->acquire();
-    if (!order) {
-        send_order_ack(conn, msg.client_order_id, 1, "POOL_EXHAUSTED");
-        return;
-    }
-
-    order->order_id  = msg.client_order_id;
-    order->client_id = msg.client_id;
-    order->symbol    = std::string(msg.symbol, strnlen(msg.symbol, 8));
-    order->side      = static_cast<Side>(msg.side);
-    order->type      = static_cast<OrderType>(msg.order_type);
-    order->price     = msg.price;
-    order->quantity  = msg.quantity;
-    order->filled    = 0;
-
-    if (!risk_manager_->submit_order(order)) {
-        // submit_order already released the order on failure
-        send_order_ack(conn, msg.client_order_id, 1, "QUEUE_FULL");
-        return;
-    }
-
-    send_order_ack(conn, msg.client_order_id, 0, "ACCEPTED");
-}
-
-void TcpGateway::handle_cancel_order(ClientConnection* conn, const CancelOrderMessage& msg) {
-    // Cancel is best-effort; always ack
-    send_order_ack(conn, msg.order_id, 0, "CANCEL_ACCEPTED");
-}
-
-void TcpGateway::send_order_ack(ClientConnection* conn, uint64_t order_id,
-                                  uint8_t status, const char* reason) {
-    OrderAckMessage ack{};
-    ack.order_id = order_id;
-    ack.status   = status;
-    std::strncpy(ack.reason, reason, sizeof(ack.reason) - 1);
-
-    seal_message(ack, MessageType::ORDER_ACK,
-                 next_sequence_.fetch_add(1, std::memory_order_relaxed),
-                 now_ns());
-
-    conn->write_message_safe(&ack, sizeof(ack));
-    messages_sent_.fetch_add(1, std::memory_order_relaxed);
-}
-
-void TcpGateway::send_trade_report(ClientConnection* conn, const Trade& trade) {
-    TradeReportMessage rep{};
-    rep.trade_id      = trade.trade_id;
-    rep.buy_order_id  = trade.buy_order_id;
-    rep.sell_order_id = trade.sell_order_id;
-    std::strncpy(rep.symbol, trade.symbol.c_str(), sizeof(rep.symbol) - 1);
-    rep.price    = trade.price;
-    rep.quantity = trade.quantity;
-
-    seal_message(rep, MessageType::TRADE_REPORT,
-                 next_sequence_.fetch_add(1, std::memory_order_relaxed),
-                 now_ns());
-
-    conn->write_message_safe(&rep, sizeof(rep));
-    messages_sent_.fetch_add(1, std::memory_order_relaxed);
-}
-
-uint64_t TcpGateway::now_ns() const {
-    return static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
 } // namespace rtes

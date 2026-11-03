@@ -14,7 +14,7 @@ int main() {
     OrderPool pool(TOTAL);
 
     size_t trade_count = 0;
-    OrderBook book("AAPL", pool, [&trade_count](const Trade&) { ++trade_count; });
+    OrderBook book("AAPL", pool, [&trade_count](const Trade&, const Order&, const Order&) { ++trade_count; });
 
     std::mt19937 gen(42);
     std::uniform_int_distribution<Price>    price_dist(14900, 15100);

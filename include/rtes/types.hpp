@@ -10,6 +10,7 @@ using Quantity = uint32_t;
 using OrderID = uint64_t;
 using TradeID = uint64_t;
 using ClientID = uint64_t;
+using SessionId = uint32_t;  // one per TCP connection, never reused
 
 enum class Side : uint8_t {
     BUY = 0,
@@ -22,8 +23,10 @@ enum class OrderType : uint8_t {
 };
 
 struct Order {
-    OrderID  order_id{0};
+    OrderID  order_id{0};          // exchange-assigned, unique across the exchange
     ClientID client_id{0};
+    SessionId session_id{0};       // owning session
+    uint64_t client_order_id{0};   // the owner's id for this order
     std::string symbol;
     Side side{Side::BUY};
     OrderType type{OrderType::LIMIT};

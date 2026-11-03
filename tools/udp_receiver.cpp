@@ -84,7 +84,7 @@ int main(int argc, char* argv[]) {
         last_seq = hdr->sequence;
         ++msg_count;
 
-        if (type == rtes::MessageType::TRADE_REPORT &&
+        if (type == rtes::MessageType::TRADE_UPDATE &&
             static_cast<size_t>(n) >= sizeof(rtes::TradeUpdateMessage)) {
             const auto* tr = reinterpret_cast<const rtes::TradeUpdateMessage*>(buf);
             char sym[9] = {};

@@ -20,12 +20,23 @@ struct PriceLevel {
 
 class OrderBook {
 public:
-    using TradeCallback = std::function<void(const Trade&)>;
+    // Called once per fill, before a filled order is returned to the pool.
+    // aggressor/passive reflect the state after the fill.
+    using TradeCallback = std::function<void(const Trade&, const Order& aggressor, const Order& passive)>;
     
     explicit OrderBook(const std::string& symbol, OrderPool& pool, TradeCallback cb = nullptr);
     
     bool add_order(Order* order);
     bool cancel_order(OrderID order_id);
+
+    // Live order with this id, or nullptr.
+    const Order* find(OrderID order_id) const;
+
+    // Change price and/or total quantity of a resting order. Precondition:
+    // new_quantity > filled. Same price and a lower quantity keeps time
+    // priority; anything else re-queues the order (and may match it).
+    // Returns false if the order is unknown.
+    bool modify_order(OrderID order_id, Price new_price, Quantity new_quantity);
     
     Price best_bid() const;
     Price best_ask() const;

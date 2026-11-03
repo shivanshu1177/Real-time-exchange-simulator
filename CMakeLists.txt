@@ -37,6 +37,7 @@ set(CORE_SOURCES
     src/config.cpp
     src/risk_manager.cpp
     src/matching_engine.cpp
+    src/gateway_core.cpp
     src/tcp_gateway.cpp
     src/udp_publisher.cpp
     src/exchange.cpp

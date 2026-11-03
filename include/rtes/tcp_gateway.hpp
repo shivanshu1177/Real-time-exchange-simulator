@@ -1,31 +1,29 @@
 #pragma once
 
 #include "rtes/protocol.hpp"
-#include "rtes/risk_manager.hpp"
-#include "rtes/memory_pool.hpp"
-#include "rtes/security_utils.hpp"
+#include "rtes/gateway_core.hpp"
 #include "rtes/memory_safety.hpp"
 #include <thread>
 #include <atomic>
 #include <vector>
 #include <unordered_map>
 #include <memory>
-#include <mutex>
 #include <sys/socket.h>
 
 namespace rtes {
 
 class ClientConnection {
 public:
-    explicit ClientConnection(int fd);
+    ClientConnection(int fd, SessionId session);
     ~ClientConnection() = default;
 
-    // Non-copyable, non-movable (owned via shared_ptr)
+    // Non-copyable, non-movable
     ClientConnection(const ClientConnection&) = delete;
     ClientConnection& operator=(const ClientConnection&) = delete;
 
-    int  get_fd() const { return fd_.get(); }
-    bool is_connected() const { return connected_.load(); }
+    int       get_fd() const { return fd_.get(); }
+    SessionId session() const { return session_; }
+    bool      is_connected() const { return connected_.load(); }
 
     // Blocking read of exactly `size` bytes into buffer
     ssize_t read_data_safe(void* buffer, size_t size);
@@ -42,14 +40,19 @@ public:
     void disconnect();
 
 private:
-    FileDescriptor fd_;
+    FileDescriptor    fd_;
+    SessionId         session_;
     std::atomic<bool> connected_{true};
 };
 
-class TcpGateway {
+// TCP transport for GatewayCore. One thread does everything: accept, read,
+// hand frames to the core, and write the execution reports the core produces
+// from engine events. Risk runs inside the core on this thread.
+class TcpGateway : public OutputSink {
 public:
-    explicit TcpGateway(uint16_t port, RiskManager* risk_manager, OrderPool* order_pool);
-    ~TcpGateway();
+    TcpGateway(uint16_t port, RiskManager& risk, OrderPool& pool,
+               std::vector<MatchingEngine*> engines);
+    ~TcpGateway() override;
 
     void start();
     void stop();
@@ -58,42 +61,31 @@ public:
     uint64_t messages_received()    const { return messages_received_.load(); }
     uint64_t messages_sent()        const { return messages_sent_.load(); }
 
-private:
-    uint16_t      port_;
-    RiskManager*  risk_manager_;
-    OrderPool*    order_pool_;
+    // OutputSink
+    void send(SessionId session, const void* data, size_t len) override;
 
-    std::thread acceptor_thread_;
-    std::thread worker_thread_;
+private:
+    uint16_t    port_;
+    GatewayCore core_;
+
+    std::thread       worker_thread_;
     std::atomic<bool> running_{false};
 
     FileDescriptor listen_fd_;
 
-    std::unordered_map<int, std::shared_ptr<ClientConnection>> connections_;
-    mutable std::mutex connections_mutex_;
+    // Only touched by the worker thread (and by stop() after it has joined).
+    std::unordered_map<int, std::unique_ptr<ClientConnection>> connections_;   // by fd
+    std::unordered_map<SessionId, ClientConnection*>           by_session_;
 
     std::atomic<uint64_t> connections_accepted_{0};
     std::atomic<uint64_t> messages_received_{0};
     std::atomic<uint64_t> messages_sent_{0};
-    std::atomic<uint64_t> next_sequence_{1};
 
     bool setup_listen_socket();
-
-    void acceptor_loop();
     void worker_loop();
-
+    void accept_pending();
     void handle_client_data(int client_fd);
     void remove_connection(int client_fd);
-
-    void process_message_safe(ClientConnection* conn, const FixedSizeBuffer<8192>& buffer);
-    void handle_new_order(ClientConnection* conn, const NewOrderMessage& msg);
-    void handle_cancel_order(ClientConnection* conn, const CancelOrderMessage& msg);
-
-    void send_order_ack(ClientConnection* conn, uint64_t order_id,
-                        uint8_t status, const char* reason);
-    void send_trade_report(ClientConnection* conn, const Trade& trade);
-
-    uint64_t now_ns() const;
 };
 
 } // namespace rtes

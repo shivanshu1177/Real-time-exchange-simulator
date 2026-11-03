@@ -7,39 +7,31 @@ Line numbers refer to the current tree. The milestone column refers to [ROADMAP.
 
 | # | Issue | Where | Milestone |
 |---|---|---|---|
-| W1 | **ACK before risk.** The gateway replies `ACCEPTED` as soon as the order is queued. Risk runs later in another thread and drops rejected orders silently: the client is never told. | `src/tcp_gateway.cpp:313-319`, `src/risk_manager.cpp:59-146` | M1 |
-| W2 | Every pre-queue reject (unknown symbol, zero quantity) says `INVALID_SYMBOL`. | `src/tcp_gateway.cpp:293-294` | M1 |
-| W3 | **Cancel is a no-op.** The gateway answers `CANCEL_ACCEPTED` without cancelling anything; the order can still trade. | `src/tcp_gateway.cpp:322-325` | M1 |
-| W4 | The engine ignores the client id on cancel, so ownership is not checked. | `src/matching_engine.cpp:81-82` | M1 |
-| W5 | **No fill reports.** `send_trade_report` exists but is never called; clients never learn about their fills. | `src/tcp_gateway.cpp:342` | M1 |
-| W6 | The client's order id is used as the book's global order id: two clients using the same id overwrite each other in the book's lookup table. | `src/tcp_gateway.cpp:304`, `src/order_book.cpp:17` | M1 |
-| W7 | No modify/amend message. | `include/rtes/protocol.hpp` | M1 |
-| W8 | **Identity comes from the payload.** `client_id` is read from each message; any connection can act as any client. There is no logon. | `src/tcp_gateway.cpp:291,305` | M1 |
-| W9 | **Partial TCP reads desync the stream.** A message split across two `recv` calls is discarded. Writes busy-spin on `EAGAIN`. | `src/tcp_gateway.cpp:21-43,61-85`, `:53` | M1 |
-| W10 | The checksum is computed by senders but never verified. | `include/rtes/protocol.hpp:101` | M1 |
-| W11 | Malformed frames (unknown type, wrong length) are silently ignored and the connection stays open. | `src/tcp_gateway.cpp:274-287` | M1 |
-| W12 | Resting orders survive their client's disconnect (no cancel-on-disconnect). | `src/tcp_gateway.cpp:264-272` | M1 |
-| W13 | The poll loop allocates two `std::vector`s per iteration. | `src/tcp_gateway.cpp:206,220` | M1 |
+| W8 | **Identity comes from the payload.** `client_id` (used for risk limits) is read from each `NEW_ORDER`; there is no logon. Order ownership is per TCP session and cannot be spoofed, but risk limits can. | `src/gateway_core.cpp:124,134` | M1 |
+| W9 | **Partial TCP reads desync the stream.** A message split across two `recv` calls is discarded. Writes busy-spin on `EAGAIN`. | `src/tcp_gateway.cpp:21-43,45-59` | M1 |
+| W10 | The checksum is computed by senders but never verified. | `include/rtes/protocol.hpp:164` | M1 |
+| W11 | Malformed frames (unknown type, wrong length) are silently ignored and the connection stays open. | `src/tcp_gateway.cpp:61-85`, `src/gateway_core.cpp` (`on_message`) | M1 |
+| W12 | Resting orders survive their client's disconnect (no cancel-on-disconnect); their later fill reports are dropped. | `src/tcp_gateway.cpp:237` | M1 |
+| W13 | The poll loop allocates a `std::vector` per iteration. | `src/tcp_gateway.cpp:199` | M1 |
 
 ## Matching
 
 | # | Issue | Where | Milestone |
 |---|---|---|---|
-| B1 | BBO quantities are always published as 0. | `src/matching_engine.cpp:106,108` | M1 |
-| B2 | Level `total_quantity` is wrong: partial fills of a resting order do not reduce it, and an order that partially filled before resting adds its remaining quantity but subtracts its original quantity when it completes (unsigned underflow). | `src/order_book.cpp:82,111,177,181` | M1 |
-| B3 | A market order on an empty book is accepted, never filled or cancelled, and its pool slot leaks. | `src/order_book.cpp:21-22,170-172` | M1 |
-| B4 | No self-trade prevention: a client can trade with itself. | `src/order_book.cpp:62-124` | M1 |
+| B1 | BBO quantities are always published as 0. | `src/matching_engine.cpp:181,183` | M1 |
+| B2 | Level `total_quantity` is wrong: partial fills of a resting order do not reduce it, and an order that partially filled before resting adds its remaining quantity but subtracts its original quantity when it completes (unsigned underflow). | `src/order_book.cpp:122,151,209-222` | M1 |
+| B3 | The unfilled part of a market order is never cancelled or reported (the client only sees `NEW` and any fills), and its pool slot leaks. | `src/order_book.cpp:21-22,209-211` | M1 |
+| B4 | No self-trade prevention: a client can trade with itself. | `src/order_book.cpp:102` | M1 |
 | B5 | Tick and lot size are loaded from config and never enforced. | `src/config.cpp:187-188` | M1 |
-| B6 | The book has a mutex and a `std::function` callback despite the single-writer design; cancel is O(n). `Order`/`Trade` hold a `std::string` symbol (heap allocation on the hot path). | `include/rtes/order_book.hpp:23,45`, `src/order_book.cpp:148,159`, `include/rtes/types.hpp:27,42` | M1 |
+| B6 | The book has a mutex and a `std::function` callback despite the single-writer design; cancel is O(n). `Order`/`Trade` hold a `std::string` symbol: a string copy per order and per trade (no heap allocation for symbols of up to 15 characters, thanks to the small-string buffer, but not allocation-free by construction). | `include/rtes/order_book.hpp:25,56`, `src/order_book.cpp:188`, `include/rtes/types.hpp:30,45` | M1 |
 
 ## Risk
 
 | # | Issue | Where | Milestone |
 |---|---|---|---|
-| R1 | The collar reference price is hard-coded to 150.00 for every symbol. | `src/risk_manager.cpp:19` | M1 |
-| R2 | Notional exposure is added and never released on fill or cancel, so every client eventually hits the limit. | `src/risk_manager.cpp:143` | M1 |
-| R3 | The per-client active order id set grows forever. | `src/risk_manager.cpp:133` | M1 |
-| R4 | Every reject builds and logs a `std::string` line (millions of lines under load). | `src/risk_manager.cpp:84-140` | M1 |
+| R1 | The collar reference price is hard-coded to 150.00 for every symbol. | `src/risk_manager.cpp:14` | M1 |
+| R2 | Notional exposure is added and never released on fill or cancel, so every client eventually hits the limit. | `src/risk_manager.cpp:78` | M1 |
+| R4 | Every reject builds and logs a `std::string` line, now on the gateway thread (millions of lines under load). | `src/risk_manager.cpp:27-75` | M1 |
 
 ## Memory
 

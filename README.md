@@ -6,28 +6,34 @@ A C++20 exchange simulator: a TCP binary order gateway, pre-trade risk, one matc
 (price-time priority) and UDP multicast market data.
 
 ## Status
-This is a work in progress. What exists today:
+This is a work in progress. What exists today, with tests:
 - **Builds and tests:** GCC 14 and Clang 18 with warnings as errors, plus ASan/UBSan and TSan builds, all run in CI.
-  Test coverage is currently 3 order-book unit tests.
 - **Order entry:** TCP on port 8888, fixed-size binary messages ([API](docs/API.md)).
+  - New, cancel and modify.
+  - Pre-trade risk is decided before the first reply.
+  - Rejects carry a specific reason.
+  - Execution reports go to both sides of every fill.
+  - Order ids are assigned by the exchange, and ownership is enforced per session.
 - **Matching:** limit and market orders, price-time priority, one writer thread per symbol.
 - **Market data:** UDP multicast on 239.0.0.1:9999, BBO (prices only) and trades.
 
 Not working yet, and tracked in [KNOWN_ISSUES](docs/KNOWN_ISSUES.md):
-- Orders are acknowledged before the risk check.
-- Cancel does nothing.
-- Clients receive no fill reports.
-- Partial TCP reads are mishandled.
-- There is no logon.
+- Partial TCP reads are mishandled and checksums are not verified.
+- There is no logon, and no cancel-on-disconnect.
+- BBO quantities are always 0.
+- No self-trade prevention.
+- No tick or lot checks.
 
 Planned work is in the [ROADMAP](docs/ROADMAP.md): depth, metrics, determinism, perps, a market-making venue,
 and measured benchmarks. No performance figures are claimed until benchmark results are committed to the repo.
 
 ## Architecture
-- **TCP Order Gateway** (port 8888): binary protocol
-- **Risk Manager**: pre-trade checks (size, price collar, rate, notional) on its own thread
-- **Matching Engine**: one single-writer thread per symbol, price-time priority
-- **Market Data**: UDP multicast (239.0.0.1:9999), BBO and trades
+- **TCP gateway** (port 8888): one thread; binary protocol, synchronous pre-trade risk (size, price collar,
+  rate, notional), execution reports back to clients
+- **Matching engine**: one single-writer thread per symbol, price-time priority
+- **Market data**: UDP multicast (239.0.0.1:9999), BBO and trades
+
+See [ARCHITECTURE](docs/ARCHITECTURE.md).
 
 ## Quick Start
 

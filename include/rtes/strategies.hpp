@@ -74,8 +74,9 @@ private:
     uint64_t    next_order_id_{1};
     uint64_t    next_sequence_{1};
     uint64_t    base_price_{15000 * 100}; // $150.00 in fixed-point (*100 for cents, *100 for ticks)
-    uint64_t    bid_order_id_{0};
-    uint64_t    ask_order_id_{0};
+    uint64_t    bid_coid_{0};   // client order id of the live bid quote, 0 if none
+    uint64_t    ask_coid_{0};
+    bool        requote_{false};
 
     std::atomic<uint64_t> orders_sent_{0};
     std::atomic<uint64_t> orders_acked_{0};
@@ -83,10 +84,11 @@ private:
     std::atomic<uint64_t> trades_received_{0};
 
     void update_quotes();
-    void cancel_order(uint64_t order_id);
+    void cancel_quote(uint64_t& coid);
+    void place_quote(uint8_t side, uint64_t price, uint64_t& coid);
     bool send_order(uint8_t side, uint64_t price, uint32_t quantity);
-    bool recv_ack(uint64_t& assigned_order_id);
-    bool recv_message(MessageHeader& hdr);
+    void handle(const struct StrategyFrame& f);
+    template<typename Done> bool wait_until(Done done);
     static uint64_t now_ns();
 };
 

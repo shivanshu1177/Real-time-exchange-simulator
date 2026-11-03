@@ -51,7 +51,7 @@ TEST_F(OrderBookTest, CancelOrder) {
 
 TEST_F(OrderBookTest, MatchOrders) {
     size_t trade_count = 0;
-    auto trade_callback = [&trade_count](const Trade&) { trade_count++; };
+    auto trade_callback = [&trade_count](const Trade&, const Order&, const Order&) { trade_count++; };
     
     OrderBook matching_book("TEST", *pool, trade_callback);
     

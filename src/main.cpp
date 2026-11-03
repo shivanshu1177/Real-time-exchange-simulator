@@ -34,8 +34,9 @@ int main(int argc, char* argv[]) {
     LOG_INFO("RTES: starting TCP gateway on port " +
              std::to_string(exc_cfg.tcp_port));
     rtes::TcpGateway gateway(exc_cfg.tcp_port,
-                              exchange.get_risk_manager(),
-                              exchange.get_order_pool());
+                              *exchange.get_risk_manager(),
+                              *exchange.get_order_pool(),
+                              exchange.get_engines());
     gateway.start();
 
     LOG_INFO("RTES: starting UDP publisher on " +

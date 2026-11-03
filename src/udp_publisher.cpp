@@ -104,7 +104,7 @@ void UdpPublisher::send_trade_update(const MarketDataEvent& ev) {
     msg.price    = ev.trade.price;
     msg.quantity = ev.trade.quantity;
 
-    seal_message(msg, MessageType::TRADE_REPORT,
+    seal_message(msg, MessageType::TRADE_UPDATE,
                  next_sequence_.fetch_add(1, std::memory_order_relaxed),
                  get_timestamp_ns());
     send_message(&msg, sizeof(msg));

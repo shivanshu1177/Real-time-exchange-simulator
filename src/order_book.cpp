@@ -44,6 +44,46 @@ bool OrderBook::cancel_order(OrderID order_id) {
     return true;
 }
 
+const Order* OrderBook::find(OrderID order_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = order_lookup_.find(order_id);
+    return it == order_lookup_.end() ? nullptr : it->second;
+}
+
+bool OrderBook::modify_order(OrderID order_id, Price new_price, Quantity new_quantity) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    auto it = order_lookup_.find(order_id);
+    if (it == order_lookup_.end()) return false;
+    Order* order = it->second;
+
+    if (new_price == order->price && new_quantity <= order->quantity) {
+        // Quantity decrease at the same price: keep time priority.
+        Quantity reduction = order->quantity - new_quantity;
+        auto adjust = [&](auto& side) {
+            auto level_it = side.find(order->price);
+            if (level_it != side.end()) level_it->second.total_quantity -= reduction;
+        };
+        if (order->side == Side::BUY) adjust(bids_); else adjust(asks_);
+        order->quantity = new_quantity;
+        return true;
+    }
+
+    // Price change or quantity increase: lose priority, re-enter as a new
+    // arrival (it can match if the new price crosses).
+    remove_order_from_book(order);
+    order->price    = new_price;
+    order->quantity = new_quantity;
+    match_order(order);
+    if (order->is_filled()) {
+        order_lookup_.erase(order->order_id);
+        pool_.release(order);
+    } else {
+        add_to_book(order);
+    }
+    return true;
+}
+
 Price OrderBook::best_bid() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return bids_.empty() ? 0 : bids_.begin()->first;
@@ -136,7 +176,7 @@ void OrderBook::execute_trade(Order* aggressive_order, Order* passive_order, Qua
             .price = price,
             .quantity = quantity
         };
-        trade_callback_(trade);
+        trade_callback_(trade, *aggressive_order, *passive_order);
     }
 }
 

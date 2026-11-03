@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <unistd.h>
+#include <poll.h>
 #include <algorithm>
 #include <cstring>
 #include <iostream>
@@ -57,6 +58,34 @@ static bool recv_all(int fd, void* buf, size_t len) {
     return true;
 }
 
+// Wait up to timeout_ms for the socket to become readable.
+static bool wait_readable(int fd, int timeout_ms) {
+    struct pollfd pfd{fd, POLLIN, 0};
+    return ::poll(&pfd, 1, timeout_ms) > 0 && (pfd.revents & POLLIN);
+}
+
+// One complete inbound frame. The exchange only sends fixed-size messages
+// well below sizeof(body).
+struct StrategyFrame {
+    MessageHeader hdr{};
+    uint8_t       raw[256]{};   // whole message, header included
+};
+
+static bool read_frame(int fd, StrategyFrame& f) {
+    if (!recv_all(fd, &f.hdr, sizeof(f.hdr))) return false;
+    if (f.hdr.length < sizeof(f.hdr) || f.hdr.length > sizeof(f.raw)) return false;
+    std::memcpy(f.raw, &f.hdr, sizeof(f.hdr));
+    size_t body = f.hdr.length - sizeof(f.hdr);
+    return body == 0 || recv_all(fd, f.raw + sizeof(f.hdr), body);
+}
+
+static bool as_exec_report(const StrategyFrame& f, ExecReportMessage& rep) {
+    if (static_cast<MessageType>(f.hdr.type) != MessageType::EXEC_REPORT ||
+        f.hdr.length != sizeof(rep)) return false;
+    std::memcpy(&rep, f.raw, sizeof(rep));
+    return true;
+}
+
 static uint64_t now_ns_impl() {
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -103,26 +132,30 @@ bool LiquidityTakerStrategy::send_order(uint8_t side, uint64_t price, uint32_t q
     return send_all(sock_fd_, &msg, sizeof(msg));
 }
 
+// Read reports until the order just sent is acknowledged (NEW) or rejected.
+// Fills for any of our orders are counted as they arrive.
 bool LiquidityTakerStrategy::recv_ack() {
-    MessageHeader hdr{};
-    if (!recv_all(sock_fd_, &hdr, sizeof(hdr))) return false;
-    // Read body
-    uint32_t body = hdr.length > sizeof(hdr)
-                    ? hdr.length - static_cast<uint32_t>(sizeof(hdr)) : 0;
-    if (body > 0) {
-        std::vector<uint8_t> buf(body);
-        if (!recv_all(sock_fd_, buf.data(), body)) return false;
+    const uint64_t coid = next_order_id_ - 1;
+    StrategyFrame f;
+    while (wait_readable(sock_fd_, 2000)) {
+        if (!read_frame(sock_fd_, f)) return false;
+        ExecReportMessage rep;
+        if (!as_exec_report(f, rep)) continue;
+        auto type = static_cast<ExecType>(rep.exec_type);
+        if (type == ExecType::PARTIAL_FILL || type == ExecType::FILL) {
+            trades_received_.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (rep.client_order_id != coid) continue;
+        if (type == ExecType::NEW) {
+            orders_acked_.fetch_add(1, std::memory_order_relaxed);
+            return true;
+        }
+        if (type == ExecType::REJECTED) {
+            orders_rejected_.fetch_add(1, std::memory_order_relaxed);
+            return true;
+        }
     }
-
-    auto type = static_cast<MessageType>(hdr.type);
-    if (type == MessageType::ORDER_ACK) {
-        // Need to peek at status — it's in the full OrderAckMessage
-        // We already read it into buf above if body > 0
-        orders_acked_.fetch_add(1, std::memory_order_relaxed);
-    } else if (type == MessageType::TRADE_REPORT) {
-        trades_received_.fetch_add(1, std::memory_order_relaxed);
-    }
-    return true;
+    return false;   // no answer within 2 s
 }
 
 void LiquidityTakerStrategy::run(std::chrono::seconds duration) {
@@ -185,75 +218,80 @@ bool MarketMakerStrategy::send_order(uint8_t side, uint64_t price, uint32_t quan
     return true;
 }
 
-bool MarketMakerStrategy::recv_ack(uint64_t& assigned_order_id) {
-    assigned_order_id = 0;
-    MessageHeader hdr{};
-    if (!recv_all(sock_fd_, &hdr, sizeof(hdr))) return false;
-
-    uint32_t body_len = hdr.length > sizeof(hdr)
-                        ? hdr.length - static_cast<uint32_t>(sizeof(hdr)) : 0;
-    std::vector<uint8_t> body(body_len);
-    if (body_len > 0 && !recv_all(sock_fd_, body.data(), body_len)) return false;
-
-    auto type = static_cast<MessageType>(hdr.type);
-    if (type == MessageType::ORDER_ACK) {
-        // OrderAckMessage body starts with uint64_t order_id
-        if (body_len >= sizeof(uint64_t)) {
-            std::memcpy(&assigned_order_id, body.data(), sizeof(uint64_t));
-        }
-        orders_acked_.fetch_add(1, std::memory_order_relaxed);
-    } else if (type == MessageType::TRADE_REPORT) {
-        // Extract price from TradeReportMessage body
-        // Layout after header: trade_id(8) buy_id(8) sell_id(8) symbol(8) price(8) qty(4) pad(4)
-        if (body_len >= 8 + 8 + 8 + 8 + 8) {
-            uint64_t price = 0;
-            std::memcpy(&price, body.data() + 8 + 8 + 8 + 8, sizeof(uint64_t));
-            on_trade(price);
-        }
+// Handle one execution report or cancel reject. Updates quote state and
+// requests a requote after a fill.
+void MarketMakerStrategy::handle(const StrategyFrame& f) {
+    ExecReportMessage rep;
+    if (!as_exec_report(f, rep)) return;
+    auto type = static_cast<ExecType>(rep.exec_type);
+    if (type == ExecType::PARTIAL_FILL || type == ExecType::FILL) {
         trades_received_.fetch_add(1, std::memory_order_relaxed);
+        if (rep.last_px > 0) base_price_ = rep.last_px;
+        requote_ = true;
+    }
+    if (type == ExecType::NEW)      orders_acked_.fetch_add(1, std::memory_order_relaxed);
+    if (type == ExecType::REJECTED) orders_rejected_.fetch_add(1, std::memory_order_relaxed);
+    const bool terminal = type == ExecType::FILL || type == ExecType::CANCELED ||
+                          type == ExecType::REJECTED;
+    if (terminal) {
+        if (rep.client_order_id == bid_coid_) bid_coid_ = 0;
+        if (rep.client_order_id == ask_coid_) ask_coid_ = 0;
+    }
+}
+
+// Read and handle frames until done() is true or 2 s pass without data.
+template<typename Done>
+bool MarketMakerStrategy::wait_until(Done done) {
+    StrategyFrame f;
+    while (!done()) {
+        if (!wait_readable(sock_fd_, 2000) || !read_frame(sock_fd_, f)) return false;
+        handle(f);
+        if (static_cast<MessageType>(f.hdr.type) == MessageType::CANCEL_REJECT) {
+            CancelRejectMessage rej;
+            std::memcpy(&rej, f.raw, sizeof(rej));
+            // The quote is already gone (filled or unknown): stop tracking it.
+            if (rej.client_order_id == bid_coid_) bid_coid_ = 0;
+            if (rej.client_order_id == ask_coid_) ask_coid_ = 0;
+        }
     }
     return true;
 }
 
-bool MarketMakerStrategy::recv_message(MessageHeader& hdr) {
-    if (!recv_all(sock_fd_, &hdr, sizeof(hdr))) return false;
-    uint32_t body_len = hdr.length > sizeof(hdr)
-                        ? hdr.length - static_cast<uint32_t>(sizeof(hdr)) : 0;
-    std::vector<uint8_t> discard(body_len);
-    if (body_len > 0) recv_all(sock_fd_, discard.data(), body_len);
-    return true;
+void MarketMakerStrategy::cancel_quote(uint64_t& coid) {
+    if (coid == 0) return;
+    CancelOrderMessage msg{};
+    msg.client_order_id = coid;
+    seal_message(msg, MessageType::CANCEL_ORDER, next_sequence_++, now_ns());
+    if (!send_all(sock_fd_, &msg, sizeof(msg))) return;
+    wait_until([&] { return coid == 0; });
 }
 
-void MarketMakerStrategy::cancel_order(uint64_t order_id) {
-    if (order_id == 0) return;
-    CancelOrderMessage msg{};
-    msg.order_id  = order_id;
-    msg.client_id = 1002;
-    seal_message(msg, MessageType::CANCEL_ORDER, next_sequence_++, now_ns());
-    send_all(sock_fd_, &msg, sizeof(msg));
-    // Read the ack (best effort)
-    MessageHeader hdr{};
-    recv_message(hdr);
+void MarketMakerStrategy::place_quote(uint8_t side, uint64_t price, uint64_t& coid) {
+    if (!send_order(side, price, quote_size_)) return;
+    const uint64_t sent = next_order_id_ - 1;
+    bool answered = false;
+    // Watch for the NEW (or REJECTED) of exactly this order.
+    StrategyFrame f;
+    while (!answered && wait_readable(sock_fd_, 2000) && read_frame(sock_fd_, f)) {
+        handle(f);
+        ExecReportMessage rep;
+        if (as_exec_report(f, rep) && rep.client_order_id == sent) {
+            auto type = static_cast<ExecType>(rep.exec_type);
+            if (type == ExecType::NEW) { coid = sent; answered = true; }
+            if (type == ExecType::REJECTED) answered = true;
+        }
+    }
 }
 
 void MarketMakerStrategy::update_quotes() {
-    // Cancel stale quotes
-    cancel_order(bid_order_id_);
-    cancel_order(ask_order_id_);
+    requote_ = false;
+    cancel_quote(bid_coid_);
+    cancel_quote(ask_coid_);
 
     uint64_t bid_price = base_price_ > spread_ticks_ ? base_price_ - spread_ticks_ : 1;
     uint64_t ask_price = base_price_ + spread_ticks_;
-
-    // Send BUY quote
-    send_order(0 /*BUY*/, bid_price, quote_size_);
-    uint64_t id = 0;
-    recv_ack(id);
-    bid_order_id_ = id ? id : next_order_id_ - 1;
-
-    // Send SELL quote
-    send_order(1 /*SELL*/, ask_price, quote_size_);
-    recv_ack(id);
-    ask_order_id_ = id ? id : next_order_id_ - 1;
+    place_quote(0 /*BUY*/,  bid_price, bid_coid_);
+    place_quote(1 /*SELL*/, ask_price, ask_coid_);
 }
 
 void MarketMakerStrategy::on_trade(uint64_t price) {
@@ -265,28 +303,13 @@ void MarketMakerStrategy::run(std::chrono::seconds duration) {
     update_quotes();
 
     auto deadline = std::chrono::steady_clock::now() + duration;
+    StrategyFrame f;
     while (std::chrono::steady_clock::now() < deadline) {
-        // Poll for incoming messages (acks / trade reports)
-        MessageHeader hdr{};
-        // Non-blocking peek: set a short timeout via SO_RCVTIMEO
-        struct timeval tv{0, 50000}; // 50ms
-        ::setsockopt(sock_fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-        if (recv_all(sock_fd_, &hdr, sizeof(hdr))) {
-            uint32_t body_len = hdr.length > sizeof(hdr)
-                                ? hdr.length - static_cast<uint32_t>(sizeof(hdr)) : 0;
-            std::vector<uint8_t> body(body_len);
-            if (body_len > 0) recv_all(sock_fd_, body.data(), body_len);
-
-            if (static_cast<MessageType>(hdr.type) == MessageType::TRADE_REPORT) {
-                uint64_t price = 0;
-                if (body_len >= 8 + 8 + 8 + 8 + 8) {
-                    std::memcpy(&price, body.data() + 8 + 8 + 8 + 8, sizeof(uint64_t));
-                }
-                trades_received_.fetch_add(1, std::memory_order_relaxed);
-                on_trade(price);
-            }
+        if (wait_readable(sock_fd_, 50)) {
+            if (!read_frame(sock_fd_, f)) break;
+            handle(f);
         }
+        if (requote_) update_quotes();
     }
 }
 

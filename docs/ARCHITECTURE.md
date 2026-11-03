@@ -4,21 +4,28 @@ This describes the code as it is today. Known defects are listed in [KNOWN_ISSUE
 planned changes in [ROADMAP.md](ROADMAP.md).
 
 ## Threads
-1. **Gateway acceptor** (`TcpGateway::acceptor_loop`): accepts TCP connections on port 8888.
-2. **Gateway worker** (`TcpGateway::worker_loop`): polls client sockets, decodes messages, runs a quick symbol and
-   quantity check, takes an `Order` from the pool and pushes it to the risk queue.
-3. **Risk** (`RiskManager::run`): one thread; full pre-trade checks (size, price collar, per-client rate,
-   duplicate id, notional), then routes to the symbol's engine.
-4. **Matching engine** (`MatchingEngine::run`): one thread per symbol; the only writer of that symbol's book.
-5. **Market data** (`UdpPublisher::worker_loop`): drains market-data events and sends UDP multicast.
+1. **Gateway** (`TcpGateway::worker_loop`): one thread. Accepts connections on port 8888, reads requests, and hands
+   them to `GatewayCore`, which validates them, runs pre-trade risk synchronously, assigns the exchange order id
+   and routes the request to the symbol's engine. The same thread drains every engine's event queue and writes
+   execution reports back to clients.
+2. **Matching engine** (`MatchingEngine::run`): one thread per symbol; the only writer of that symbol's book.
+3. **Market data** (`UdpPublisher::worker_loop`): drains market-data events and sends UDP multicast.
+
+Risk has no thread of its own: running it on the gateway thread means the first reply to a client already
+carries the risk decision, and all risk state has a single owner.
 
 ## Data flow
 ```
-TCP client → gateway worker ─SPSC→ risk ─SPSC (per symbol)→ matching engine ─MPMC→ UDP publisher → multicast
-                 │
-                 └── ORDER_ACK back to the client (sent when the order is queued, before risk; see KNOWN_ISSUES W1)
+TCP client ⇄ gateway thread ── OrderRequest (SPSC, per engine) ──→ matching engine ─MPMC→ UDP publisher → multicast
+                  ↑                                                     │
+                  └──────────── ExecEvent (SPSC, per engine) ←──────────┘
 ```
-No execution reports flow back to clients yet (KNOWN_ISSUES W5).
+- Rejected requests are answered by the gateway directly (`EXEC_REPORT REJECTED` or `CANCEL_REJECT`) and never
+  reach an engine.
+- Accepted requests are answered by the engine's events: `NEW`, fills, `CANCELED`, `REPLACED`, or a cancel reject
+  (unknown order, not the owner, too late). The gateway turns each event into a message for the owning session.
+- `GatewayCore` (`include/rtes/gateway_core.hpp`) has no socket code, so the order lifecycle is tested in-process
+  (`tests/test_order_lifecycle.cpp`).
 
 ## Queues
 - `SPSCQueue<T>` (`include/rtes/spsc_queue.hpp`): bounded ring, head and tail on separate cache lines.
@@ -28,9 +35,9 @@ No execution reports flow back to clients yet (KNOWN_ISSUES W5).
 ## Memory
 - `OrderPool` (`include/rtes/memory_pool.hpp`): fixed-size pool of `Order` objects (`order_pool_size` in config,
   1M by default) with a CAS-based free list. Safe only with a single acquiring thread (KNOWN_ISSUES P1).
-- Orders are returned to the pool on fill and cancel, and by risk on reject. Market orders that find no
+- The gateway thread is the only thread that takes orders from the pool; engines return them on fill and cancel. Market orders that find no
   liquidity are not returned (KNOWN_ISSUES B3).
-- `Order` and `Trade` still contain a `std::string` symbol, so the hot path allocates (KNOWN_ISSUES B6).
+- `Order` and `Trade` still contain a `std::string` symbol (KNOWN_ISSUES B6).
 
 ## Order book (`include/rtes/order_book.hpp`)
 ```cpp
@@ -45,7 +52,7 @@ does not need.
 
 ## Network protocols
 Exact message layouts are in [API.md](API.md).
-- **TCP order entry** (port 8888): `NEW_ORDER`, `CANCEL_ORDER` in; `ORDER_ACK` out.
+- **TCP order entry** (port 8888): `NEW_ORDER`, `CANCEL_ORDER`, `MODIFY_ORDER` in; `EXEC_REPORT`, `CANCEL_REJECT` out.
 - **UDP market data** (239.0.0.1:9999): BBO updates and trades, with a per-publisher sequence number.
   No depth messages yet.
 
