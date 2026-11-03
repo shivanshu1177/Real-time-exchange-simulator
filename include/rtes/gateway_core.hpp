@@ -20,6 +20,8 @@ class OutputSink {
 public:
     virtual ~OutputSink() = default;
     virtual void send(SessionId session, const void* data, size_t len) = 0;
+    // Close the session after what was already sent has been flushed.
+    virtual void disconnect(SessionId session) = 0;
 };
 
 // Order-entry logic without sockets: validation, risk, per-session order ids,
@@ -30,18 +32,25 @@ public:
     GatewayCore(RiskManager& risk, OrderPool& pool,
                 std::vector<MatchingEngine*> engines,   // index = symbol index
                 OutputSink& out,
-                size_t max_live_orders_per_session = 16384);
+                size_t max_live_orders_per_session = 16384,
+                bool cancel_on_disconnect = true);
 
     // Session lifecycle. Allocation happens here, not per order.
+    // A new session must LOGON before it may send orders.
     SessionId open_session();
+    // Forget the session. With cancel-on-disconnect, its live orders are
+    // cancelled first (the cancels are queued to the engines; their reports
+    // are dropped because nobody is left to receive them).
     void      close_session(SessionId session);
+    // Send SESSION_REJECT and ask the transport to close the connection.
+    void      reject_session(SessionId session, SessionRejectReason reason, uint32_t detail);
     bool      has_session(SessionId session) const { return sessions_.count(session) != 0; }
     size_t    live_orders(SessionId session) const;
 
-    // Handle one complete inbound frame (header + body). Unknown or short
-    // frames are ignored here; framing checks belong to the transport.
+    // Handle one complete inbound frame that already passed check_inbound_frame().
     void on_message(SessionId session, const uint8_t* data, size_t len);
 
+    void on_logon(SessionId session, const LogonMessage& msg);
     void on_new_order(SessionId session, const NewOrderMessage& msg);
     void on_cancel(SessionId session, const CancelOrderMessage& msg);
     void on_modify(SessionId session, const ModifyOrderMessage& msg);
@@ -67,6 +76,8 @@ private:
         explicit Session(size_t max_live) : live(max_live) {}
         FlatMap<LiveOrder> live;      // client_order_id -> live order
         uint64_t next_out_seq{1};
+        bool     logged_in{false};
+        ClientID client_id{0};        // bound at LOGON; payload client_id is ignored
     };
 
     RiskManager&                  risk_;
@@ -76,6 +87,7 @@ private:
     std::vector<uint64_t>         next_order_seq_;  // by symbol index
     OutputSink&                   out_;
     size_t                        max_live_orders_;
+    bool                          cancel_on_disconnect_;
 
     std::unordered_map<SessionId, std::unique_ptr<Session>> sessions_;
     SessionId next_session_id_{1};

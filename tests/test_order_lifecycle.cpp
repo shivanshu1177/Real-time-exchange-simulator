@@ -22,11 +22,13 @@ struct Sent {
 };
 
 struct CaptureSink : OutputSink {
-    std::vector<Sent> sent;
+    std::vector<Sent>      sent;
+    std::vector<SessionId> disconnected;
     void send(SessionId s, const void* data, size_t len) override {
         auto* p = static_cast<const uint8_t*>(data);
         sent.push_back({s, std::vector<uint8_t>(p, p + len)});
     }
+    void disconnect(SessionId s) override { disconnected.push_back(s); }
 };
 
 class Lifecycle : public ::testing::Test {
@@ -45,11 +47,22 @@ protected:
 
     void SetUp() override { make_gateway(); }
 
-    void make_gateway() {
+    void make_gateway(bool cancel_on_disconnect = true) {
         risk = std::make_unique<RiskManager>(risk_cfg, symbols);
-        gw = std::make_unique<GatewayCore>(*risk, pool, std::vector<MatchingEngine*>{&aapl, &msft}, sink);
+        gw = std::make_unique<GatewayCore>(*risk, pool, std::vector<MatchingEngine*>{&aapl, &msft},
+                                           sink, 16384, cancel_on_disconnect);
         A = gw->open_session();
         B = gw->open_session();
+        logon(A, A);   // client id = session id unless a test says otherwise
+        logon(B, B);
+        take();        // drop the LOGON_ACKs
+    }
+
+    void logon(SessionId s, ClientID client_id, uint32_t version = PROTOCOL_VERSION) {
+        LogonMessage m{};
+        m.protocol_version = version; m.client_id = client_id;
+        seal_message(m, MessageType::LOGON, 1, 0);
+        gw->on_message(s, reinterpret_cast<const uint8_t*>(&m), sizeof(m));
     }
 
     // Run engines and deliver their events, until quiet.
@@ -417,7 +430,7 @@ TEST_F(Lifecycle, ThreadedEnginesDeliverEveryReport) {
         gw->drain_events();
     }
     // Expected: per pair, A NEW + A FILL + B NEW + B FILL.
-    const size_t expected = 4 * N;
+    const size_t expected = cursor + 4 * N;   // cursor: messages before the test (LOGON_ACKs)
     for (int spins = 0; sink.sent.size() < expected && spins < 2000000; ++spins) {
         gw->drain_events();
     }
@@ -425,9 +438,10 @@ TEST_F(Lifecycle, ThreadedEnginesDeliverEveryReport) {
     msft.stop();
     gw->drain_events();
 
-    ASSERT_EQ(sink.sent.size(), expected);
+    auto msgs = take();
+    ASSERT_EQ(msgs.size(), 4 * N);
     size_t fills = 0;
-    for (auto& m : sink.sent) {
+    for (auto& m : msgs) {
         auto r = er(m);
         if (type_of(r) == ExecType::FILL) ++fills;
     }
@@ -435,4 +449,66 @@ TEST_F(Lifecycle, ThreadedEnginesDeliverEveryReport) {
     EXPECT_EQ(gw->live_orders(A), 0u);
     EXPECT_EQ(gw->live_orders(B), 0u);
     EXPECT_EQ(aapl.events_dropped(), 0u);
+}
+
+TEST_F(Lifecycle, OrdersBeforeLogonAreRejected) {
+    SessionId c = gw->open_session();
+    new_order(c, 1, 0, px(150), 10);
+    expect_rejected(RejectReason::NOT_LOGGED_IN);
+    cancel(c, 1);
+    auto msgs = take();
+    ASSERT_EQ(msgs.size(), 1u);
+    EXPECT_EQ(static_cast<RejectReason>(cr(msgs[0]).reject_reason), RejectReason::NOT_LOGGED_IN);
+}
+
+TEST_F(Lifecycle, PayloadClientIdIsIgnored) {
+    // Two sessions logged on as client 7 share client 7's rate limit, whatever
+    // client_id their orders carry in the payload.
+    risk_cfg.max_orders_per_second = 1;
+    make_gateway();
+    SessionId c = gw->open_session();
+    SessionId d = gw->open_session();
+    logon(c, 7);
+    logon(d, 7);
+    take();
+
+    NewOrderMessage m{};
+    std::memcpy(m.symbol, "AAPL", 4);
+    m.side = 0; m.order_type = 1; m.price = px(150); m.quantity = 1;
+
+    m.client_order_id = 1; m.client_id = 100;
+    seal_message(m, MessageType::NEW_ORDER, 1, 0);
+    gw->on_message(c, reinterpret_cast<const uint8_t*>(&m), sizeof(m));
+    pump();
+    EXPECT_EQ(type_of(er(take().at(0))), ExecType::NEW);
+
+    m.client_order_id = 1; m.client_id = 200;   // pretends to be someone else
+    seal_message(m, MessageType::NEW_ORDER, 2, 0);
+    gw->on_message(d, reinterpret_cast<const uint8_t*>(&m), sizeof(m));
+    expect_rejected(RejectReason::RATE_LIMIT);
+}
+
+TEST_F(Lifecycle, CloseSessionCancelsItsRestingOrders) {
+    rest(A, 1, 0, px(150), 10);
+    rest(A, 2, 0, px(149), 10);
+    gw->close_session(A);
+    pump();
+    EXPECT_TRUE(take().empty()) << "reports for a closed session must be dropped";
+
+    sell(B, 1, px(149), 20);   // would hit both if they were still there
+    pump();
+    auto msgs = take();
+    ASSERT_EQ(msgs.size(), 1u);
+    EXPECT_EQ(type_of(er(msgs[0])), ExecType::NEW);
+}
+
+TEST_F(Lifecycle, CloseSessionWithoutCancelOnDisconnectKeepsOrders) {
+    make_gateway(/*cancel_on_disconnect=*/false);
+    rest(A, 1, 0, px(150), 10);
+    gw->close_session(A);
+    sell(B, 1, px(150), 10);
+    pump();
+    int fills = 0;
+    for (auto& m : take()) if (type_of(er(m)) == ExecType::FILL) ++fills;
+    EXPECT_EQ(fills, 1);   // only B is left to be told
 }

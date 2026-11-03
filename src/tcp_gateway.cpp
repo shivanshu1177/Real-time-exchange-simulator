@@ -1,104 +1,109 @@
 #include "rtes/tcp_gateway.hpp"
 #include "rtes/logger.hpp"
-#include <poll.h>
-#include <fcntl.h>
-#include <netinet/tcp.h>
-#include <netinet/in.h>
+#include <algorithm>
 #include <arpa/inet.h>
-#include <unistd.h>
-#include <sys/socket.h>
 #include <cerrno>
-#include <cstring>
 #include <chrono>
-#include <vector>
+#include <cstring>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 namespace rtes {
 
 // ---- ClientConnection ----------------------------------------------------
 
-ClientConnection::ClientConnection(int fd, SessionId session) : fd_(fd), session_(session) {}
+ClientConnection::ClientConnection(int fd, SessionId session)
+    : fd_(fd), session_(session),
+      rx_(std::make_unique<uint8_t[]>(kRecvCapacity)),
+      tx_(std::make_unique<uint8_t[]>(kSendCapacity)) {}
 
-ssize_t ClientConnection::read_data_safe(void* buffer, size_t size) {
-    size_t total = 0;
-    uint8_t* buf = static_cast<uint8_t*>(buffer);
-    while (total < size) {
-        ssize_t n = ::recv(fd_.get(), buf + total, size - total, 0);
+ClientConnection::ReadResult ClientConnection::read_available() {
+    // Make room: drop consumed bytes from the front.
+    if (rx_begin_ == rx_end_) {
+        rx_begin_ = rx_end_ = 0;
+    } else if (rx_begin_ > 0 && rx_end_ == kRecvCapacity) {
+        std::memmove(rx_.get(), rx_.get() + rx_begin_, rx_end_ - rx_begin_);
+        rx_end_  -= rx_begin_;
+        rx_begin_ = 0;
+    }
+    while (rx_end_ < kRecvCapacity) {
+        ssize_t n = ::recv(fd_.get(), rx_.get() + rx_end_, kRecvCapacity - rx_end_, 0);
         if (n > 0) {
-            total += static_cast<size_t>(n);
+            rx_end_ += static_cast<size_t>(n);
         } else if (n == 0) {
-            connected_.store(false);
-            return static_cast<ssize_t>(total);
+            return ReadResult::CLOSED;
+        } else if (errno == EINTR) {
+            continue;
+        } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return ReadResult::OK;
         } else {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                // Non-blocking fd: no data right now
-                if (total > 0) return static_cast<ssize_t>(total);
-                return -1;
-            }
-            if (errno == EINTR) continue;
-            connected_.store(false);
-            return -1;
+            return ReadResult::ERROR;
         }
     }
-    return static_cast<ssize_t>(total);
+    return ReadResult::OK;   // buffer full; the rest is read after frames are consumed
 }
 
-ssize_t ClientConnection::write_data_safe(const void* buffer, size_t size) {
-    size_t total = 0;
-    const uint8_t* buf = static_cast<const uint8_t*>(buffer);
-    while (total < size) {
-        ssize_t n = ::send(fd_.get(), buf + total, size - total, 0);
-        if (n > 0) {
-            total += static_cast<size_t>(n);
-        } else if (n < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) continue;
-            connected_.store(false);
-            return -1;
-        }
-    }
-    return static_cast<ssize_t>(total);
+FrameCheck ClientConnection::next_frame(const uint8_t*& frame) const {
+    frame = rx_.get() + rx_begin_;
+    return check_inbound_frame(frame, rx_end_ - rx_begin_);
 }
 
-bool ClientConnection::read_message_safe(FixedSizeBuffer<8192>& buf) {
-    buf.clear();
+void ClientConnection::consume(size_t n) {
+    rx_begin_ += n;
+    if (rx_begin_ == rx_end_) rx_begin_ = rx_end_ = 0;
+}
 
-    // Read the fixed header first
-    MessageHeader hdr{};
-    ssize_t n = read_data_safe(&hdr, sizeof(hdr));
-    if (n != static_cast<ssize_t>(sizeof(hdr))) return false;
-    if (!validate_header(hdr)) return false;
-
-    uint32_t total_len = hdr.length;
-    if (total_len > buf.capacity() || total_len < sizeof(hdr)) return false;
-
-    // Copy header into buf
-    buf.append(&hdr, sizeof(hdr));
-
-    // Read remaining body bytes
-    uint32_t body_len = total_len - static_cast<uint32_t>(sizeof(hdr));
-    if (body_len > 0) {
-        // Use remaining space in buf directly
-        n = read_data_safe(buf.data.data() + buf.size, body_len);
-        if (n != static_cast<ssize_t>(body_len)) return false;
-        buf.size += static_cast<size_t>(body_len);
+bool ClientConnection::queue_send(const void* data, size_t len) {
+    if (tx_end_ + len > kSendCapacity && tx_begin_ > 0) {
+        std::memmove(tx_.get(), tx_.get() + tx_begin_, tx_end_ - tx_begin_);
+        tx_end_  -= tx_begin_;
+        tx_begin_ = 0;
     }
+    if (tx_end_ + len > kSendCapacity) return false;
+    std::memcpy(tx_.get() + tx_end_, data, len);
+    tx_end_ += len;
     return true;
 }
 
-bool ClientConnection::write_message_safe(const void* message, size_t size) {
-    return write_data_safe(message, size) == static_cast<ssize_t>(size);
+bool ClientConnection::flush() {
+    while (tx_begin_ < tx_end_) {
+        // MSG_NOSIGNAL: a peer that already closed must not raise SIGPIPE.
+        ssize_t n = ::send(fd_.get(), tx_.get() + tx_begin_, tx_end_ - tx_begin_, MSG_NOSIGNAL);
+        if (n > 0) {
+            tx_begin_ += static_cast<size_t>(n);
+        } else if (n < 0 && errno == EINTR) {
+            continue;
+        } else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            return true;   // wait for POLLOUT
+        } else {
+            return false;
+        }
+    }
+    tx_begin_ = tx_end_ = 0;
+    return true;
 }
 
-void ClientConnection::disconnect() {
-    connected_.store(false);
+void ClientConnection::close() {
     fd_.reset();
 }
 
 // ---- TcpGateway ----------------------------------------------------------
 
 TcpGateway::TcpGateway(uint16_t port, RiskManager& risk, OrderPool& pool,
-                       std::vector<MatchingEngine*> engines)
-    : port_(port), core_(risk, pool, std::move(engines), *this)
-{}
+                       std::vector<MatchingEngine*> engines, bool cancel_on_disconnect,
+                       size_t max_connections)
+    : port_(port),
+      core_(risk, pool, std::move(engines), *this, 16384, cancel_on_disconnect),
+      max_connections_(max_connections)
+{
+    pfds_.reserve(max_connections_ + 1);
+    to_close_.reserve(max_connections_);
+    connections_.reserve(max_connections_);
+    by_session_.reserve(max_connections_);
+}
 
 TcpGateway::~TcpGateway() { stop(); }
 
@@ -136,29 +141,30 @@ bool TcpGateway::setup_listen_socket() {
         return false;
     }
 
+    sockaddr_in bound{};
+    socklen_t   len = sizeof(bound);
+    ::getsockname(fd, reinterpret_cast<sockaddr*>(&bound), &len);
+    bound_port_ = ntohs(bound.sin_port);
+
     listen_fd_.reset(fd);
-    LOG_INFO("TcpGateway: listening on port " + std::to_string(port_));
+    LOG_INFO("TcpGateway: listening on port " + std::to_string(bound_port_));
     return true;
 }
 
-void TcpGateway::start() {
+bool TcpGateway::start() {
     if (!setup_listen_socket()) {
         LOG_ERROR("TcpGateway: failed to set up listen socket");
-        return;
+        return false;
     }
     running_.store(true, std::memory_order_release);
     worker_thread_ = std::thread(&TcpGateway::worker_loop, this);
+    return true;
 }
 
 void TcpGateway::stop() {
     running_.store(false, std::memory_order_release);
     if (worker_thread_.joinable()) worker_thread_.join();
-    for (auto& [fd, conn] : connections_) {
-        core_.close_session(conn->session());
-        conn->disconnect();
-    }
-    connections_.clear();
-    by_session_.clear();
+    while (!connections_.empty()) remove_connection(connections_.begin()->first);
 }
 
 void TcpGateway::accept_pending() {
@@ -172,6 +178,11 @@ void TcpGateway::accept_pending() {
             if (errno == EINTR) continue;
             break;   // EAGAIN: nothing more to accept
         }
+        if (connections_.size() >= max_connections_) {
+            LOG_WARN("TcpGateway: connection limit reached, refusing fd=" + std::to_string(client_fd));
+            ::close(client_fd);
+            continue;
+        }
 
         int flags = ::fcntl(client_fd, F_GETFL, 0);
         ::fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
@@ -182,7 +193,7 @@ void TcpGateway::accept_pending() {
         auto conn = std::make_unique<ClientConnection>(client_fd, session);
         by_session_[session] = conn.get();
         connections_[client_fd] = std::move(conn);
-        connections_accepted_.fetch_add(1, std::memory_order_relaxed);
+        stats_.connections_accepted.fetch_add(1, std::memory_order_relaxed);
         LOG_INFO("TcpGateway: accepted connection fd=" + std::to_string(client_fd) +
                  " session=" + std::to_string(session) +
                  " from " + inet_ntoa(client_addr.sin_addr));
@@ -195,63 +206,114 @@ void TcpGateway::worker_loop() {
     // later. When idle, poll with a 1 ms timeout instead of spinning.
     constexpr auto kBusyWindow = std::chrono::microseconds(200);
     auto last_activity = std::chrono::steady_clock::now() - kBusyWindow;
+
     while (running_.load(std::memory_order_acquire)) {
-        std::vector<struct pollfd> pfds;
-        pfds.reserve(connections_.size() + 1);
-        pfds.push_back(pollfd{listen_fd_.get(), POLLIN, 0});
-        for (auto& [fd, conn] : connections_) pfds.push_back(pollfd{fd, POLLIN, 0});
+        // Rebuilt in place: capacity was reserved for max_connections_ + 1.
+        pfds_.clear();
+        pfds_.push_back(pollfd{listen_fd_.get(), POLLIN, 0});
+        for (auto& [fd, conn] : connections_) {
+            short events = POLLIN;
+            if (conn->has_pending_output()) events |= POLLOUT;
+            pfds_.push_back(pollfd{fd, events, 0});
+        }
 
         const bool busy = std::chrono::steady_clock::now() - last_activity < kBusyWindow;
-        int ret = ::poll(pfds.data(), static_cast<nfds_t>(pfds.size()), busy ? 0 : 1 /*ms*/);
+        int ret = ::poll(pfds_.data(), static_cast<nfds_t>(pfds_.size()), busy ? 0 : 1 /*ms*/);
         if (ret > 0) {
-            if (pfds[0].revents & POLLIN) accept_pending();
-            for (size_t i = 1; i < pfds.size(); ++i) {
-                const auto& pfd = pfds[i];
-                if (pfd.revents & POLLIN) {
-                    handle_client_data(pfd.fd);
-                } else if (pfd.revents & (POLLHUP | POLLERR)) {
-                    remove_connection(pfd.fd);
+            if (pfds_[0].revents & POLLIN) accept_pending();
+            for (size_t i = 1; i < pfds_.size(); ++i) {
+                const auto& pfd = pfds_[i];
+                if (pfd.revents == 0) continue;
+                auto it = connections_.find(pfd.fd);
+                if (it == connections_.end() || it->second->closing) continue;
+                ClientConnection& conn = *it->second;
+                if (pfd.revents & (POLLIN | POLLHUP | POLLERR)) handle_readable(conn);
+                if ((pfd.revents & POLLOUT) && !conn.closing && !conn.flush()) {
+                    disconnect(conn.session());
                 }
             }
         }
-        if (core_.drain_events() > 0 || ret > 0) {
-            last_activity = std::chrono::steady_clock::now();
+
+        const size_t events = core_.drain_events();
+
+        // Send what this iteration produced; whatever the socket does not
+        // take now waits for POLLOUT.
+        for (auto& [fd, conn] : connections_) {
+            if (conn->has_pending_output() && !conn->closing && !conn->flush()) {
+                disconnect(conn->session());
+            }
         }
+        close_pending();
+
+        if (events > 0 || ret > 0) last_activity = std::chrono::steady_clock::now();
     }
 }
 
-void TcpGateway::handle_client_data(int client_fd) {
-    auto it = connections_.find(client_fd);
-    if (it == connections_.end()) return;
-    ClientConnection* conn = it->second.get();
+void TcpGateway::handle_readable(ClientConnection& conn) {
+    const auto result = conn.read_available();
 
-    FixedSizeBuffer<8192> buf;
-    if (!conn->read_message_safe(buf)) {
-        if (!conn->is_connected()) remove_connection(client_fd);
-        return;
+    // Process every complete frame received, even if the peer then closed.
+    const uint8_t* frame = nullptr;
+    while (!conn.closing) {
+        const FrameCheck fc = conn.next_frame(frame);
+        if (fc.status == FrameCheck::NEED_MORE) break;
+        if (fc.status == FrameCheck::INVALID) {
+            stats_.protocol_violations.fetch_add(1, std::memory_order_relaxed);
+            LOG_WARN("TcpGateway: protocol violation on session " + std::to_string(conn.session()) +
+                     " reason=" + std::to_string(static_cast<int>(fc.reason)) +
+                     " detail=" + std::to_string(fc.detail));
+            core_.reject_session(conn.session(), fc.reason, fc.detail);   // sends, then disconnect()
+            return;
+        }
+        stats_.messages_received.fetch_add(1, std::memory_order_relaxed);
+        core_.on_message(conn.session(), frame, fc.length);
+        conn.consume(fc.length);
     }
-    messages_received_.fetch_add(1, std::memory_order_relaxed);
-    core_.on_message(conn->session(), buf.begin(), buf.size);
-}
 
-void TcpGateway::remove_connection(int client_fd) {
-    auto it = connections_.find(client_fd);
-    if (it == connections_.end()) return;
-    const SessionId session = it->second->session();
-    core_.close_session(session);
-    by_session_.erase(session);
-    it->second->disconnect();
-    connections_.erase(it);
-    LOG_INFO("TcpGateway: connection closed fd=" + std::to_string(client_fd) +
-             " session=" + std::to_string(session));
+    if (result != ClientConnection::ReadResult::OK) disconnect(conn.session());
 }
 
 void TcpGateway::send(SessionId session, const void* data, size_t len) {
     auto it = by_session_.find(session);
     if (it == by_session_.end()) return;
-    if (it->second->write_message_safe(data, len)) {
-        messages_sent_.fetch_add(1, std::memory_order_relaxed);
+    ClientConnection& conn = *it->second;
+    if (!conn.queue_send(data, len)) {
+        // The client is not reading its reports: drop it rather than block
+        // the gateway thread or grow without bound.
+        stats_.slow_consumer_disconnects.fetch_add(1, std::memory_order_relaxed);
+        disconnect(session);
+        return;
     }
+    stats_.messages_sent.fetch_add(1, std::memory_order_relaxed);
+}
+
+void TcpGateway::disconnect(SessionId session) {
+    auto it = by_session_.find(session);
+    if (it == by_session_.end() || it->second->closing) return;
+    it->second->closing = true;
+    to_close_.push_back(it->second->fd());
+}
+
+void TcpGateway::close_pending() {
+    for (int fd : to_close_) {
+        auto it = connections_.find(fd);
+        if (it == connections_.end()) continue;
+        it->second->flush();   // best effort, e.g. the SESSION_REJECT
+        remove_connection(fd);
+    }
+    to_close_.clear();
+}
+
+void TcpGateway::remove_connection(int fd) {
+    auto it = connections_.find(fd);
+    if (it == connections_.end()) return;
+    const SessionId session = it->second->session();
+    core_.close_session(session);   // cancel-on-disconnect happens here
+    by_session_.erase(session);
+    it->second->close();
+    connections_.erase(it);
+    LOG_INFO("TcpGateway: connection closed fd=" + std::to_string(fd) +
+             " session=" + std::to_string(session));
 }
 
 } // namespace rtes

@@ -86,6 +86,18 @@ static bool as_exec_report(const StrategyFrame& f, ExecReportMessage& rep) {
     return true;
 }
 
+// Send LOGON and wait for LOGON_ACK. Returns false if the exchange refuses.
+static bool logon(int fd, uint64_t client_id) {
+    LogonMessage msg{};
+    msg.protocol_version = PROTOCOL_VERSION;
+    msg.client_id        = client_id;
+    seal_message(msg, MessageType::LOGON, 0, 0);
+    if (!send_all(fd, &msg, sizeof(msg))) return false;
+    StrategyFrame f;
+    if (!wait_readable(fd, 2000) || !read_frame(fd, f)) return false;
+    return static_cast<MessageType>(f.hdr.type) == MessageType::LOGON_ACK;
+}
+
 static uint64_t now_ns_impl() {
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -102,7 +114,7 @@ LiquidityTakerStrategy::~LiquidityTakerStrategy() { disconnect(); }
 
 bool LiquidityTakerStrategy::connect() {
     sock_fd_ = tcp_connect(host_, port_);
-    return sock_fd_ >= 0;
+    return sock_fd_ >= 0 && logon(sock_fd_, 1001);
 }
 
 void LiquidityTakerStrategy::disconnect() {
@@ -120,7 +132,6 @@ uint64_t LiquidityTakerStrategy::now_ns() { return now_ns_impl(); }
 bool LiquidityTakerStrategy::send_order(uint8_t side, uint64_t price, uint32_t quantity) {
     NewOrderMessage msg{};
     msg.client_order_id = next_order_id_++;
-    msg.client_id       = 1001;
     // msg is zero-initialised, so this null-pads the 8-byte wire field
     std::memcpy(msg.symbol, symbol_.data(), std::min(symbol_.size(), sizeof(msg.symbol)));
     msg.side       = side;
@@ -192,7 +203,7 @@ MarketMakerStrategy::~MarketMakerStrategy() { disconnect(); }
 
 bool MarketMakerStrategy::connect() {
     sock_fd_ = tcp_connect(host_, port_);
-    return sock_fd_ >= 0;
+    return sock_fd_ >= 0 && logon(sock_fd_, 1002);
 }
 
 void MarketMakerStrategy::disconnect() {
@@ -204,7 +215,6 @@ uint64_t MarketMakerStrategy::now_ns() { return now_ns_impl(); }
 bool MarketMakerStrategy::send_order(uint8_t side, uint64_t price, uint32_t quantity) {
     NewOrderMessage msg{};
     msg.client_order_id = next_order_id_++;
-    msg.client_id       = 1002;
     // msg is zero-initialised, so this null-pads the 8-byte wire field
     std::memcpy(msg.symbol, symbol_.data(), std::min(symbol_.size(), sizeof(msg.symbol)));
     msg.side       = side;

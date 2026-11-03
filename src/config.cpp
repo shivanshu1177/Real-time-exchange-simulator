@@ -152,6 +152,8 @@ std::unique_ptr<Config> Config::load_from_file(const std::string& path) {
     if (udp_port) cfg->exchange.udp_port = udp_port;
     auto metrics_port = extract_uint16(content, "metrics_port");
     if (metrics_port) cfg->exchange.metrics_port = metrics_port;
+    auto cod = extract_string(content, "cancel_on_disconnect");
+    if (!cod.empty()) cfg->exchange.cancel_on_disconnect = (cod == "true");
 
     // Risk block
     auto max_order_size = extract_uint64(content, "max_order_size");

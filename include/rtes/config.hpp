@@ -19,6 +19,7 @@ struct ExchangeConfig {
     std::string udp_multicast_group;
     uint16_t udp_port;
     uint16_t metrics_port;
+    bool cancel_on_disconnect{true};  // cancel a session's resting orders when it disconnects
 };
 
 struct RiskConfig {

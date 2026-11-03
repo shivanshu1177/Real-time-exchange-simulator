@@ -7,12 +7,7 @@ Line numbers refer to the current tree. The milestone column refers to [ROADMAP.
 
 | # | Issue | Where | Milestone |
 |---|---|---|---|
-| W8 | **Identity comes from the payload.** `client_id` (used for risk limits) is read from each `NEW_ORDER`; there is no logon. Order ownership is per TCP session and cannot be spoofed, but risk limits can. | `src/gateway_core.cpp:124,134` | M1 |
-| W9 | **Partial TCP reads desync the stream.** A message split across two `recv` calls is discarded. Writes busy-spin on `EAGAIN`. | `src/tcp_gateway.cpp:21-43,45-59` | M1 |
-| W10 | The checksum is computed by senders but never verified. | `include/rtes/protocol.hpp:164` | M1 |
-| W11 | Malformed frames (unknown type, wrong length) are silently ignored and the connection stays open. | `src/tcp_gateway.cpp:61-85`, `src/gateway_core.cpp` (`on_message`) | M1 |
-| W12 | Resting orders survive their client's disconnect (no cancel-on-disconnect); their later fill reports are dropped. | `src/tcp_gateway.cpp:237` | M1 |
-| W13 | The poll loop allocates a `std::vector` per iteration. | `src/tcp_gateway.cpp:199` | M1 |
+| W14 | No authentication: `LOGON.api_key` is not checked, so a client can log on as any `client_id` (and share that client's risk limits). Out of scope for a simulator; documented in API.md. | `src/gateway_core.cpp` (`on_logon`) | out of scope |
 
 ## Matching
 

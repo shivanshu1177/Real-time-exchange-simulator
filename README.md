@@ -9,6 +9,9 @@ A C++20 exchange simulator: a TCP binary order gateway, pre-trade risk, one matc
 This is a work in progress. What exists today, with tests:
 - **Builds and tests:** GCC 14 and Clang 18 with warnings as errors, plus ASan/UBSan and TSan builds, all run in CI.
 - **Order entry:** TCP on port 8888, fixed-size binary messages ([API](docs/API.md)).
+  - Logon binds the session's identity; malformed frames get a session reject and are closed.
+  - Frames split across TCP reads are reassembled.
+  - A session's resting orders are cancelled when it disconnects.
   - New, cancel and modify.
   - Pre-trade risk is decided before the first reply.
   - Rejects carry a specific reason.
@@ -18,8 +21,7 @@ This is a work in progress. What exists today, with tests:
 - **Market data:** UDP multicast on 239.0.0.1:9999, BBO (prices only) and trades.
 
 Not working yet, and tracked in [KNOWN_ISSUES](docs/KNOWN_ISSUES.md):
-- Partial TCP reads are mishandled and checksums are not verified.
-- There is no logon, and no cancel-on-disconnect.
+- No authentication (the logon's API key is not checked).
 - BBO quantities are always 0.
 - No self-trade prevention.
 - No tick or lot checks.

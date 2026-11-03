@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <thread>
 
 namespace rtes {
 
@@ -15,10 +16,11 @@ uint64_t now_ns() {
 
 GatewayCore::GatewayCore(RiskManager& risk, OrderPool& pool,
                          std::vector<MatchingEngine*> engines, OutputSink& out,
-                         size_t max_live_orders_per_session)
+                         size_t max_live_orders_per_session, bool cancel_on_disconnect)
     : risk_(risk), pool_(pool), engines_(std::move(engines)),
       next_order_seq_(engines_.size(), 0), out_(out),
-      max_live_orders_(max_live_orders_per_session)
+      max_live_orders_(max_live_orders_per_session),
+      cancel_on_disconnect_(cancel_on_disconnect)
 {
     for (auto* e : engines_) {
         std::array<char, 8> name{};
@@ -34,7 +36,49 @@ SessionId GatewayCore::open_session() {
 }
 
 void GatewayCore::close_session(SessionId session) {
-    sessions_.erase(session);
+    auto it = sessions_.find(session);
+    if (it == sessions_.end()) return;
+    if (cancel_on_disconnect_) {
+        it->second->live.for_each([&](uint64_t coid, LiveOrder& live) {
+            OrderRequest req;
+            req.type                = OrderRequest::CANCEL_ORDER;
+            req.session_id          = session;
+            req.order_id            = live.order_id;
+            req.client_order_id     = coid;
+            req.via_client_order_id = true;
+            // Must not be lost: wait for the engine to make room.
+            while (!engines_[live.symbol_index]->submit(req)) std::this_thread::yield();
+        });
+    }
+    sessions_.erase(it);
+}
+
+void GatewayCore::reject_session(SessionId session, SessionRejectReason reason, uint32_t detail) {
+    auto it = sessions_.find(session);
+    if (it == sessions_.end()) return;
+    SessionRejectMessage rej{};
+    rej.reason = static_cast<uint8_t>(reason);
+    rej.detail = detail;
+    send(session, *it->second, rej, MessageType::SESSION_REJECT);
+    out_.disconnect(session);
+}
+
+void GatewayCore::on_logon(SessionId session, const LogonMessage& msg) {
+    auto it = sessions_.find(session);
+    if (it == sessions_.end()) return;
+    Session& s = *it->second;
+    if (s.logged_in) {
+        return reject_session(session, SessionRejectReason::DUPLICATE_LOGON, 0);
+    }
+    if (msg.protocol_version != PROTOCOL_VERSION) {
+        return reject_session(session, SessionRejectReason::UNSUPPORTED_VERSION, msg.protocol_version);
+    }
+    s.logged_in = true;
+    s.client_id = msg.client_id;
+    LogonAckMessage ack{};
+    ack.protocol_version = PROTOCOL_VERSION;
+    ack.session_id       = session;
+    send(session, s, ack, MessageType::LOGON_ACK);
 }
 
 size_t GatewayCore::live_orders(SessionId session) const {
@@ -60,6 +104,11 @@ void GatewayCore::on_message(SessionId session, const uint8_t* data, size_t len)
     MessageHeader hdr;
     std::memcpy(&hdr, data, sizeof(hdr));
     switch (static_cast<MessageType>(hdr.type)) {
+        case MessageType::LOGON:
+            if (len >= sizeof(LogonMessage)) {
+                LogonMessage m; std::memcpy(&m, data, sizeof(m)); on_logon(session, m);
+            }
+            break;
         case MessageType::NEW_ORDER:
             if (len >= sizeof(NewOrderMessage)) {
                 NewOrderMessage m; std::memcpy(&m, data, sizeof(m)); on_new_order(session, m);
@@ -109,6 +158,7 @@ void GatewayCore::on_new_order(SessionId session, const NewOrderMessage& msg) {
     if (it == sessions_.end()) return;
     Session& s = *it->second;
 
+    if (!s.logged_in)                                return send_reject(session, s, msg, RejectReason::NOT_LOGGED_IN);
     const int sym = find_symbol(msg.symbol);
     if (sym < 0)                                     return send_reject(session, s, msg, RejectReason::UNKNOWN_SYMBOL);
     if (msg.side > 1)                                return send_reject(session, s, msg, RejectReason::INVALID_SIDE);
@@ -121,7 +171,7 @@ void GatewayCore::on_new_order(SessionId session, const NewOrderMessage& msg) {
 
     const auto idx = static_cast<uint32_t>(sym);
     const Price price = (type == OrderType::LIMIT) ? msg.price : 0;
-    if (auto r = risk_.check_new_order(msg.client_id, idx, type, price, msg.quantity);
+    if (auto r = risk_.check_new_order(s.client_id, idx, type, price, msg.quantity);
         r != RejectReason::NONE) {
         return send_reject(session, s, msg, r);
     }
@@ -131,7 +181,7 @@ void GatewayCore::on_new_order(SessionId session, const NewOrderMessage& msg) {
 
     const OrderID id = make_order_id(idx, ++next_order_seq_[idx]);
     order->order_id        = id;
-    order->client_id       = msg.client_id;
+    order->client_id       = s.client_id;   // never the payload's client_id
     order->session_id      = session;
     order->client_order_id = msg.client_order_id;
     order->symbol          = engines_[idx]->symbol();
@@ -180,6 +230,10 @@ void GatewayCore::on_cancel(SessionId session, const CancelOrderMessage& msg) {
     if (it == sessions_.end()) return;
     Session& s = *it->second;
 
+    if (!s.logged_in) {
+        return send_cancel_reject(session, s, msg.order_id, msg.client_order_id,
+                                  RejectReason::NOT_LOGGED_IN, CancelRejectResponseTo::CANCEL);
+    }
     OrderRequest req;
     req.type       = OrderRequest::CANCEL_ORDER;
     req.session_id = session;
@@ -209,11 +263,12 @@ void GatewayCore::on_modify(SessionId session, const ModifyOrderMessage& msg) {
     req.session_id   = session;
     req.new_price    = msg.new_price;
     req.new_quantity = msg.new_quantity;
+    if (!s.logged_in) return reject(RejectReason::NOT_LOGGED_IN);
     uint32_t idx = 0;
     if (!resolve(s, msg.order_id, msg.client_order_id, req, idx)) return reject(RejectReason::UNKNOWN_ORDER);
     if (msg.new_quantity == 0) return reject(RejectReason::INVALID_QUANTITY);
     if (msg.new_price == 0)    return reject(RejectReason::INVALID_PRICE);
-    if (auto r = risk_.check_modify(0, idx, msg.new_price, msg.new_quantity);
+    if (auto r = risk_.check_modify(s.client_id, idx, msg.new_price, msg.new_quantity);
         r != RejectReason::NONE) {
         return reject(r);
     }

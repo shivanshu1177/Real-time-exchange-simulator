@@ -10,7 +10,7 @@ Conventions:
 - `symbol` is 8 bytes, NUL-padded, not necessarily NUL-terminated.
 - Known protocol defects are tracked in [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
-Protocol version: `PROTOCOL_VERSION = 2` in `protocol.hpp`.
+Protocol version: `PROTOCOL_VERSION = 3` in `protocol.hpp`.
 
 ## Message types (`MessageType`, `uint32_t`)
 
@@ -21,10 +21,13 @@ Protocol version: `PROTOCOL_VERSION = 2` in `protocol.hpp`.
 | 3 | — | retired (`ORDER_ACK` in v1) | |
 | 4 | `TRADE_UPDATE` | exchange → UDP multicast | `TradeUpdateMessage` |
 | 5 | `BBO_UPDATE` | exchange → UDP multicast | `BboUpdateMessage` |
-| 6 | `HEARTBEAT` | reserved, not sent or handled | header only |
+| 6 | `HEARTBEAT` | client → exchange, accepted and ignored; never sent | header only |
 | 7 | `MODIFY_ORDER` | client → exchange (TCP) | `ModifyOrderMessage` |
 | 8 | `EXEC_REPORT` | exchange → client (TCP) | `ExecReportMessage` |
 | 9 | `CANCEL_REJECT` | exchange → client (TCP) | `CancelRejectMessage` |
+| 10 | `LOGON` | client → exchange (TCP) | `LogonMessage` |
+| 11 | `LOGON_ACK` | exchange → client (TCP) | `LogonAckMessage` |
+| 12 | `SESSION_REJECT` | exchange → client (TCP), then the exchange closes the connection | `SessionRejectMessage` |
 
 ## Header: `MessageHeader` (28 bytes)
 
@@ -35,6 +38,21 @@ Protocol version: `PROTOCOL_VERSION = 2` in `protocol.hpp`.
 | 8 | 8 | `sequence` | `uint64_t` | sender's sequence number (per session for exchange → client) |
 | 16 | 8 | `timestamp` | `uint64_t` | sender's `steady_clock` time in ns (not wall clock) |
 | 24 | 4 | `checksum` | `uint32_t` | XOR-fold of the body bytes (after the header), see `compute_checksum` |
+
+## Sessions and framing
+
+- One TCP connection is one session. The first message must be `LOGON` with `protocol_version = 3`;
+  the exchange answers `LOGON_ACK` with the session id.
+- The `client_id` given at logon is the session's identity for risk limits. The `client_id` field of
+  `NEW_ORDER` is ignored. Orders, cancels and modifies sent before logon are rejected with `NOT_LOGGED_IN`
+  (the session stays open).
+- Authentication is out of scope: `api_key` is not checked, so any client can log on as any `client_id`.
+- Every inbound frame is checked as soon as its header arrives: the type must be one clients may send, and
+  `length` must be exactly that type's size. The checksum is checked once the frame is complete. A violation,
+  a second `LOGON`, or an unsupported version gets a `SESSION_REJECT` and the connection is closed.
+- Frames may arrive split across any number of TCP reads, or several in one read.
+- If a client stops reading and its 256 KiB send buffer fills up, the exchange drops the connection.
+- When a session ends, its resting orders are cancelled (`exchange.cancel_on_disconnect`, default `true`).
 
 ## Order lifecycle
 
@@ -79,10 +97,48 @@ Every request gets exactly one answer, and the answer already reflects the risk 
 | 12 | `NOT_OWNER` | the order belongs to another session |
 | 13 | `TOO_LATE` | the order filled or was cancelled while the request was in flight |
 | 14 | `SYSTEM_BUSY` | an internal queue or pool was full; nothing changed |
+| 15 | `NOT_LOGGED_IN` | request before a successful `LOGON` |
+
+### Session reject reasons (`SessionRejectReason`, `uint8_t`)
+
+| Value | Name | `detail` |
+|---|---|---|
+| 1 | `BAD_CHECKSUM` | message type |
+| 2 | `BAD_LENGTH` | the `length` received |
+| 3 | `UNKNOWN_TYPE` | the `type` received (unknown, or one only the exchange sends) |
+| 4 | `DUPLICATE_LOGON` | 0 |
+| 5 | `UNSUPPORTED_VERSION` | the version received |
 
 `ExecType`: 0 `NEW`, 1 `PARTIAL_FILL`, 2 `FILL`, 3 `CANCELED`, 4 `REPLACED`, 5 `REJECTED`.
 
 ## TCP order entry (port 8888)
+
+### `LogonMessage` (60 bytes, type 10)
+
+| Offset | Size | Field | Type | Notes |
+|---|---|---|---|---|
+| 0 | 28 | `header` | `MessageHeader` | |
+| 28 | 4 | `protocol_version` | `uint32_t` | must be 3 |
+| 32 | 4 | `_pad` | `uint32_t` | |
+| 36 | 8 | `client_id` | `uint64_t` | session identity for risk |
+| 44 | 16 | `api_key` | `char[16]` | reserved, not checked |
+
+### `LogonAckMessage` (36 bytes, type 11)
+
+| Offset | Size | Field | Type |
+|---|---|---|---|
+| 0 | 28 | `header` | `MessageHeader` |
+| 28 | 4 | `protocol_version` | `uint32_t` |
+| 32 | 4 | `session_id` | `uint32_t` |
+
+### `SessionRejectMessage` (36 bytes, type 12)
+
+| Offset | Size | Field | Type | Notes |
+|---|---|---|---|---|
+| 0 | 28 | `header` | `MessageHeader` | |
+| 28 | 1 | `reason` | `uint8_t` | `SessionRejectReason` |
+| 29 | 3 | `_pad` | `uint8_t[3]` | |
+| 32 | 4 | `detail` | `uint32_t` | see the table above |
 
 ### `NewOrderMessage` (68 bytes, type 1)
 
@@ -90,7 +146,7 @@ Every request gets exactly one answer, and the answer already reflects the risk 
 |---|---|---|---|---|
 | 0 | 28 | `header` | `MessageHeader` | |
 | 28 | 8 | `client_order_id` | `uint64_t` | client-assigned |
-| 36 | 8 | `client_id` | `uint64_t` | used for risk limits; taken from the payload, not authenticated |
+| 36 | 8 | `client_id` | `uint64_t` | ignored (identity comes from `LOGON`) |
 | 44 | 8 | `symbol` | `char[8]` | |
 | 52 | 1 | `side` | `uint8_t` | 0 = BUY, 1 = SELL |
 | 53 | 1 | `order_type` | `uint8_t` | 0 = MARKET, 1 = LIMIT |
@@ -175,6 +231,5 @@ Every request gets exactly one answer, and the answer already reflects the risk 
 
 ## Planned (not implemented)
 
-- Logon and session reject ([ROADMAP](ROADMAP.md) M1).
 - L2 depth snapshots and incremental updates (M2).
 - HTTP `/metrics` and `/health` (M2). Nothing listens on the configured `metrics_port` today.

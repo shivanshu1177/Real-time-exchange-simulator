@@ -20,6 +20,7 @@ static void usage(const char* prog) {
               << "  SIDE  : BUY or SELL\n"
               << "  TYPE  : LIMIT or MARKET\n"
               << "  --listen-ms N : keep printing reports for N ms of silence (default 300)\n"
+              << "  --client-id N : identity sent in LOGON (default 999)\n"
               << "Example: " << prog
               << " --host localhost --port 8888"
               << " --order \"BUY,AAPL,100,150.00,LIMIT\"\n";
@@ -66,6 +67,7 @@ int main(int argc, char* argv[]) {
     uint16_t    port  = 8888;
     std::string order_str;
     int         listen_ms = 300;
+    uint64_t    client_id = 999;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -73,6 +75,7 @@ int main(int argc, char* argv[]) {
         else if ((arg == "--port" || arg == "-p") && i + 1 < argc) port = static_cast<uint16_t>(std::stoi(argv[++i]));
         else if ((arg == "--order" || arg == "-o") && i + 1 < argc) order_str = argv[++i];
         else if (arg == "--listen-ms" && i + 1 < argc) listen_ms = std::stoi(argv[++i]);
+        else if (arg == "--client-id" && i + 1 < argc) client_id = std::stoull(argv[++i]);
     }
 
     if (order_str.empty()) { usage(argv[0]); return 1; }
@@ -108,10 +111,24 @@ int main(int argc, char* argv[]) {
     ::freeaddrinfo(res);
     std::cout << "Connected to " << host << ":" << port << "\n";
 
+    // Log on: identity is bound to the session here, not taken from orders.
+    rtes::LogonMessage logon{};
+    logon.protocol_version = rtes::PROTOCOL_VERSION;
+    logon.client_id        = client_id;
+    rtes::seal_message(logon, rtes::MessageType::LOGON, 0, now_ns());
+    rtes::LogonAckMessage ack{};
+    if (!send_all(fd, &logon, sizeof(logon)) || !recv_all(fd, &ack.header, sizeof(ack.header)) ||
+        static_cast<rtes::MessageType>(ack.header.type) != rtes::MessageType::LOGON_ACK ||
+        !recv_all(fd, reinterpret_cast<uint8_t*>(&ack) + sizeof(ack.header), sizeof(ack) - sizeof(ack.header))) {
+        std::cerr << "Logon failed\n";
+        ::close(fd);
+        return 1;
+    }
+    std::cout << "Logged on, session " << ack.session_id << "\n";
+
     // Build NewOrderMessage
     rtes::NewOrderMessage msg{};
     msg.client_order_id = now_ns(); // unique per invocation
-    msg.client_id       = 999;
     // msg is zero-initialised, so this null-pads the 8-byte wire field
     std::memcpy(msg.symbol, symbol.data(), std::min(symbol.size(), sizeof(msg.symbol)));
     msg.side       = side;

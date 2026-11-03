@@ -36,8 +36,13 @@ int main(int argc, char* argv[]) {
     rtes::TcpGateway gateway(exc_cfg.tcp_port,
                               *exchange.get_risk_manager(),
                               *exchange.get_order_pool(),
-                              exchange.get_engines());
-    gateway.start();
+                              exchange.get_engines(),
+                              exc_cfg.cancel_on_disconnect);
+    if (!gateway.start()) {
+        LOG_ERROR("RTES: cannot start the TCP gateway, exiting");
+        exchange.stop();
+        return 1;
+    }
 
     LOG_INFO("RTES: starting UDP publisher on " +
              exc_cfg.udp_multicast_group + ":" +

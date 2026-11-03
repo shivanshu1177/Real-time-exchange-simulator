@@ -42,6 +42,9 @@ TEST(Protocol, Sizes) {
     EXPECT_EQ(sizeof(ModifyOrderMessage), 60u);
     EXPECT_EQ(sizeof(ExecReportMessage), 92u);
     EXPECT_EQ(sizeof(CancelRejectMessage), 48u);
+    EXPECT_EQ(sizeof(LogonMessage), 60u);
+    EXPECT_EQ(sizeof(LogonAckMessage), 36u);
+    EXPECT_EQ(sizeof(SessionRejectMessage), 36u);
     EXPECT_EQ(sizeof(BboUpdateMessage), 60u);
     EXPECT_EQ(sizeof(TradeUpdateMessage), 76u);
 }
@@ -80,7 +83,7 @@ TEST(Protocol, NewOrderRoundTrip) {
     EXPECT_EQ(val(r.quantity), 300u);
     EXPECT_EQ(std::memcmp(r.symbol, "AAPL\0\0\0\0", 8), 0);
     EXPECT_TRUE(checksum_ok(r));
-    EXPECT_TRUE(validate_header(r.header));
+    EXPECT_EQ(check_inbound_frame(reinterpret_cast<const uint8_t*>(&r), sizeof(r)).status, FrameCheck::OK);
 }
 
 TEST(Protocol, CancelAndModifyRoundTrip) {
@@ -100,7 +103,7 @@ TEST(Protocol, CancelAndModifyRoundTrip) {
     EXPECT_EQ(val(rm.new_price), 1490000u);
     EXPECT_EQ(val(rm.new_quantity), 50u);
     EXPECT_TRUE(checksum_ok(rm));
-    EXPECT_TRUE(validate_header(rm.header));
+    EXPECT_EQ(check_inbound_frame(reinterpret_cast<const uint8_t*>(&rm), sizeof(rm)).status, FrameCheck::OK);
 }
 
 TEST(Protocol, ExecReportAndCancelRejectRoundTrip) {
@@ -136,13 +139,40 @@ TEST(Protocol, ChecksumDetectsBodyChange) {
     EXPECT_FALSE(checksum_ok(m));
 }
 
-TEST(Protocol, RetiredAndUnknownTypesRejected) {
+TEST(Protocol, InboundFrameChecks) {
+    auto check = [](const void* p, size_t n) {
+        return check_inbound_frame(static_cast<const uint8_t*>(p), n);
+    };
+    NewOrderMessage m{};
+    m.quantity = 1;
+    seal_message(m, MessageType::NEW_ORDER, 1, 1);
+
+    // Too short to judge: wait for more.
+    EXPECT_EQ(check(&m, sizeof(MessageHeader) - 1).status, FrameCheck::NEED_MORE);
+    // Header complete, body not: still waiting, type and length already fine.
+    EXPECT_EQ(check(&m, sizeof(MessageHeader)).status, FrameCheck::NEED_MORE);
+    auto ok = check(&m, sizeof(m));
+    EXPECT_EQ(ok.status, FrameCheck::OK);
+    EXPECT_EQ(ok.length, sizeof(m));
+
     MessageHeader h{};
     h.length = sizeof(MessageHeader);
-    h.type = 3;   // ORDER_ACK in protocol v1
-    EXPECT_FALSE(validate_header(h));
-    h.type = 99;
-    EXPECT_FALSE(validate_header(h));
+    for (uint32_t t : {3u /*retired ORDER_ACK*/, 99u, static_cast<uint32_t>(MessageType::EXEC_REPORT)}) {
+        h.type = t;
+        auto r = check(&h, sizeof(h));
+        EXPECT_EQ(r.status, FrameCheck::INVALID) << t;
+        EXPECT_EQ(r.reason, SessionRejectReason::UNKNOWN_TYPE) << t;
+    }
+
+    NewOrderMessage bad_len = m;
+    bad_len.header.length = 40;   // rejected as soon as the header is in
+    EXPECT_EQ(check(&bad_len, sizeof(MessageHeader)).reason, SessionRejectReason::BAD_LENGTH);
+    bad_len.header.length = 1000000;
+    EXPECT_EQ(check(&bad_len, sizeof(MessageHeader)).reason, SessionRejectReason::BAD_LENGTH);
+
+    NewOrderMessage bad_sum = m;
+    bad_sum.header.checksum = 0xdeadbeef;
+    EXPECT_EQ(check(&bad_sum, sizeof(bad_sum)).reason, SessionRejectReason::BAD_CHECKSUM);
 }
 
 // FlatMap backs the gateway's per-session order table: compare it with

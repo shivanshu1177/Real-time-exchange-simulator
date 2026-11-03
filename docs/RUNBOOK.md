@@ -29,7 +29,7 @@ The process logs to stdout (INFO/WARN) and stderr (ERROR) and stops cleanly on C
 # Listen to market data
 ./build/release/udp_receiver --multicast 239.0.0.1 --port 9999
 
-# Send one order
+# Send one order (logs on as client 999, prints every report for 300 ms)
 ./build/release/tcp_client --host localhost --port 8888 --order "BUY,AAPL,100,150.00,LIMIT"
 
 # Or run a simple strategy client for 10 seconds

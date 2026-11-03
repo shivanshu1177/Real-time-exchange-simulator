@@ -6,9 +6,11 @@
 
 namespace rtes {
 
-// Bumped on every incompatible wire change. v2: execution reports, modify,
-// cancel reject, exchange-assigned order ids; ORDER_ACK and the TCP trade report removed.
-inline constexpr uint32_t PROTOCOL_VERSION = 2;
+// Bumped on every incompatible wire change.
+// v2: execution reports, modify, cancel reject, exchange-assigned order ids;
+//     ORDER_ACK and the TCP trade report removed.
+// v3: LOGON / LOGON_ACK / SESSION_REJECT; identity bound at logon; frames validated.
+inline constexpr uint32_t PROTOCOL_VERSION = 3;
 
 enum class MessageType : uint32_t {
     NEW_ORDER     = 1,   // client -> exchange
@@ -20,6 +22,9 @@ enum class MessageType : uint32_t {
     MODIFY_ORDER  = 7,   // client -> exchange
     EXEC_REPORT   = 8,   // exchange -> client
     CANCEL_REJECT = 9,   // exchange -> client
+    LOGON         = 10,  // client -> exchange, must be the first message
+    LOGON_ACK     = 11,  // exchange -> client
+    SESSION_REJECT = 12, // exchange -> client, sent just before the exchange closes the connection
 };
 
 enum class ExecType : uint8_t {
@@ -48,6 +53,17 @@ enum class RejectReason : uint8_t {
     NOT_OWNER          = 12,  // order belongs to another session
     TOO_LATE           = 13,  // order filled or cancelled before the request arrived
     SYSTEM_BUSY        = 14,  // internal queue or pool full; nothing was changed
+    NOT_LOGGED_IN      = 15,  // order request before a successful LOGON
+};
+
+// Why the exchange is closing a session. Values are part of the protocol.
+enum class SessionRejectReason : uint8_t {
+    NONE                = 0,
+    BAD_CHECKSUM        = 1,
+    BAD_LENGTH          = 2,  // length field does not match the message type
+    UNKNOWN_TYPE        = 3,  // unknown type, or a type clients may not send
+    DUPLICATE_LOGON     = 4,
+    UNSUPPORTED_VERSION = 5,  // LOGON.protocol_version != PROTOCOL_VERSION
 };
 
 // Which request a CANCEL_REJECT answers.
@@ -125,6 +141,27 @@ struct CancelRejectMessage {
     uint8_t  _pad[2];
 };
 
+struct LogonMessage {
+    MessageHeader header;
+    uint32_t protocol_version;  // must equal PROTOCOL_VERSION
+    uint32_t _pad;
+    uint64_t client_id;         // identity for this session (used by risk)
+    char     api_key[16];       // reserved: not verified, authentication is out of scope
+};
+
+struct LogonAckMessage {
+    MessageHeader header;
+    uint32_t protocol_version;
+    uint32_t session_id;
+};
+
+struct SessionRejectMessage {
+    MessageHeader header;
+    uint8_t  reason;            // SessionRejectReason
+    uint8_t  _pad[3];
+    uint32_t detail;            // offending type or length, for diagnostics
+};
+
 #pragma pack(pop)
 
 // Wire sizes are part of the protocol (see docs/API.md); a change here is a protocol change.
@@ -134,6 +171,9 @@ static_assert(sizeof(CancelOrderMessage)  == 44, "CancelOrderMessage wire size")
 static_assert(sizeof(ModifyOrderMessage)  == 60, "ModifyOrderMessage wire size");
 static_assert(sizeof(ExecReportMessage)   == 92, "ExecReportMessage wire size");
 static_assert(sizeof(CancelRejectMessage) == 48, "CancelRejectMessage wire size");
+static_assert(sizeof(LogonMessage)        == 60, "LogonMessage wire size");
+static_assert(sizeof(LogonAckMessage)     == 36, "LogonAckMessage wire size");
+static_assert(sizeof(SessionRejectMessage) == 36, "SessionRejectMessage wire size");
 
 // Simple XOR-fold checksum over message body (bytes after the checksum field)
 inline uint32_t compute_checksum(const void* data, size_t len) noexcept {
@@ -161,17 +201,52 @@ inline void seal_message(Msg& msg, MessageType type, uint64_t sequence, uint64_t
     }
 }
 
-inline bool validate_header(const MessageHeader& h) noexcept {
-    if (h.length < sizeof(MessageHeader)) return false;
-    auto t = static_cast<MessageType>(h.type);
-    return t == MessageType::NEW_ORDER     ||
-           t == MessageType::CANCEL_ORDER  ||
-           t == MessageType::MODIFY_ORDER  ||
-           t == MessageType::EXEC_REPORT   ||
-           t == MessageType::CANCEL_REJECT ||
-           t == MessageType::TRADE_UPDATE  ||
-           t == MessageType::BBO_UPDATE    ||
-           t == MessageType::HEARTBEAT;
+// Exact length of each message type a client may send; 0 = not allowed.
+inline constexpr uint32_t inbound_length(uint32_t type) noexcept {
+    switch (static_cast<MessageType>(type)) {
+        case MessageType::NEW_ORDER:    return sizeof(NewOrderMessage);
+        case MessageType::CANCEL_ORDER: return sizeof(CancelOrderMessage);
+        case MessageType::MODIFY_ORDER: return sizeof(ModifyOrderMessage);
+        case MessageType::LOGON:        return sizeof(LogonMessage);
+        case MessageType::HEARTBEAT:    return sizeof(MessageHeader);
+        default:                        return 0;
+    }
+}
+
+struct FrameCheck {
+    enum Status : uint8_t { NEED_MORE, OK, INVALID };
+    Status              status{NEED_MORE};
+    uint32_t            length{0};    // frame length when OK
+    SessionRejectReason reason{SessionRejectReason::NONE};
+    uint32_t            detail{0};    // offending type or length when INVALID
+};
+
+// Check the frame at the start of a client's receive buffer. Type and length
+// are judged as soon as the header is complete, so a bogus length is rejected
+// without waiting for (or buffering) its body.
+inline FrameCheck check_inbound_frame(const uint8_t* data, size_t avail) noexcept {
+    FrameCheck fc;
+    if (avail < sizeof(MessageHeader)) return fc;
+    MessageHeader h;
+    std::memcpy(&h, data, sizeof(h));
+    const uint32_t expected = inbound_length(h.type);
+    if (expected == 0) {
+        fc.status = FrameCheck::INVALID; fc.reason = SessionRejectReason::UNKNOWN_TYPE; fc.detail = h.type;
+        return fc;
+    }
+    if (h.length != expected) {
+        fc.status = FrameCheck::INVALID; fc.reason = SessionRejectReason::BAD_LENGTH; fc.detail = h.length;
+        return fc;
+    }
+    if (avail < expected) return fc;   // NEED_MORE
+    const uint32_t csum = compute_checksum(data + sizeof(MessageHeader), expected - sizeof(MessageHeader));
+    if (csum != h.checksum) {
+        fc.status = FrameCheck::INVALID; fc.reason = SessionRejectReason::BAD_CHECKSUM; fc.detail = h.type;
+        return fc;
+    }
+    fc.status = FrameCheck::OK;
+    fc.length = expected;
+    return fc;
 }
 
 } // namespace rtes
