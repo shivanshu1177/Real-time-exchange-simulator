@@ -1,0 +1,23 @@
+# Build output
+build*/
+Testing/
+compile_commands.json
+*.profraw
+*.profdata
+*.gcda
+*.gcno
+
+# Editor / OS
+.DS_Store
+*.bak
+*.swp
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Runtime output
+logs/

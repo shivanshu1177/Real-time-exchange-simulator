@@ -5,12 +5,11 @@
 #include "rtes/memory_pool.hpp"
 #include "rtes/security_utils.hpp"
 #include "rtes/memory_safety.hpp"
-#include "rtes/network_security.hpp"
-#include "rtes/thread_safety.hpp"
 #include <thread>
 #include <atomic>
 #include <vector>
 #include <unordered_map>
+#include <memory>
 #include <mutex>
 #include <sys/socket.h>
 
@@ -63,7 +62,6 @@ private:
     uint16_t      port_;
     RiskManager*  risk_manager_;
     OrderPool*    order_pool_;
-    std::unique_ptr<SecureNetworkLayer> secure_network_;
 
     std::thread acceptor_thread_;
     std::thread worker_thread_;

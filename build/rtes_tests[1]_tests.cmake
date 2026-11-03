@@ -1,7 +1,0 @@
-add_test([=[OrderBookTest.AddOrder]=]  /Users/shivanshu/projects/RTES/build/rtes_tests [==[--gtest_filter=OrderBookTest.AddOrder]==] --gtest_also_run_disabled_tests)
-set_tests_properties([=[OrderBookTest.AddOrder]=]  PROPERTIES DEF_SOURCE_LINE /Users/shivanshu/projects/RTES/tests/test_order_book.cpp:18 WORKING_DIRECTORY /Users/shivanshu/projects/RTES/build SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
-add_test([=[OrderBookTest.CancelOrder]=]  /Users/shivanshu/projects/RTES/build/rtes_tests [==[--gtest_filter=OrderBookTest.CancelOrder]==] --gtest_also_run_disabled_tests)
-set_tests_properties([=[OrderBookTest.CancelOrder]=]  PROPERTIES DEF_SOURCE_LINE /Users/shivanshu/projects/RTES/tests/test_order_book.cpp:34 WORKING_DIRECTORY /Users/shivanshu/projects/RTES/build SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
-add_test([=[OrderBookTest.MatchOrders]=]  /Users/shivanshu/projects/RTES/build/rtes_tests [==[--gtest_filter=OrderBookTest.MatchOrders]==] --gtest_also_run_disabled_tests)
-set_tests_properties([=[OrderBookTest.MatchOrders]=]  PROPERTIES DEF_SOURCE_LINE /Users/shivanshu/projects/RTES/tests/test_order_book.cpp:52 WORKING_DIRECTORY /Users/shivanshu/projects/RTES/build SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
-set(  rtes_tests_TESTS OrderBookTest.AddOrder OrderBookTest.CancelOrder OrderBookTest.MatchOrders)

@@ -96,8 +96,7 @@ void ClientConnection::disconnect() {
 // ---- TcpGateway ----------------------------------------------------------
 
 TcpGateway::TcpGateway(uint16_t port, RiskManager* risk_manager, OrderPool* order_pool)
-    : port_(port), risk_manager_(risk_manager), order_pool_(order_pool),
-      secure_network_(std::make_unique<SecureNetworkLayer>())
+    : port_(port), risk_manager_(risk_manager), order_pool_(order_pool)
 {}
 
 TcpGateway::~TcpGateway() { stop(); }

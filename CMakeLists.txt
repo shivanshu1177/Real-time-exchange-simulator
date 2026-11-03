@@ -77,12 +77,6 @@ add_executable(udp_receiver tools/udp_receiver.cpp)
 target_link_libraries(udp_receiver PRIVATE rtes_core rtes_project_options)
 
 # --------------------------------------------------------------------------
-# Stress test
-# --------------------------------------------------------------------------
-add_executable(stress_test stress_test.cpp)
-target_link_libraries(stress_test PRIVATE rtes_core rtes_project_options)
-
-# --------------------------------------------------------------------------
 # Unit tests
 # --------------------------------------------------------------------------
 enable_testing()
