@@ -1,5 +1,7 @@
 # Real-Time Trading Exchange Simulator (RTES)
 
+[![CI](https://github.com/shivanshu1177/Real-time-exchange-simulator/actions/workflows/ci.yml/badge.svg)](https://github.com/shivanshu1177/Real-time-exchange-simulator/actions/workflows/ci.yml)
+
 A high-performance, low-latency trading exchange simulator built with modern C++20/23.
 
 ## Performance Targets
